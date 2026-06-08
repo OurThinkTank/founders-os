@@ -11,6 +11,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +46,7 @@ jobs:
       # requires a public source repo and will fail. Add it at launch when
       # the repo flips public (and add `id-token: write` to permissions then).
       - name: Publish core
-        run: npm publish -w packages/core
+        run: npm publish -w packages/core --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -55,7 +56,7 @@ jobs:
           npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=$VERSION"
 
       - name: Publish mcp-server
-        run: npm publish -w packages/mcp-server
+        run: npm publish -w packages/mcp-server --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
