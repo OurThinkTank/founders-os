@@ -1,0 +1,19 @@
+{
+  "name": "founders-os",
+  "version": "0.14.4",
+  "private": true,
+  "description": "Open-source MCP tools for startup and small business founders — CRM, finances, contracts, scope, and memory.",
+  "author": "OurThinkTank",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm -w packages/core run build && npm -w packages/mcp-server run build",
+    "dev": "npm -w packages/mcp-server run dev",
+    "test": "npm -w packages/core run test && npm -w packages/mcp-server run test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

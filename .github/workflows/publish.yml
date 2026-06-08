@@ -1,0 +1,90 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@ourthinktank"
+
+      - name: Sync version from release tag
+        run: |
+          # Strip the leading "v" if present (e.g. v0.13.12 → 0.13.12)
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Publishing version: $VERSION"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm -w packages/core version "$VERSION" --no-git-tag-version --allow-same-version
+          npm -w packages/mcp-server version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Two-package publish (Phase 1 core extraction). Order matters: core must
+      # be on the registry before mcp-server, because mcp-server depends on it.
+      # Versions are kept in lockstep by the sync step above. The local workspace
+      # uses "*" for the core dependency; before publishing mcp-server we pin it
+      # to the exact published version so consumers resolve a concrete release.
+      #
+      # Do NOT add --provenance while the repo is private; npm provenance
+      # requires a public source repo and will fail. Add it at launch when
+      # the repo flips public (and add `id-token: write` to permissions then).
+      - name: Publish core
+        run: npm publish -w packages/core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Pin mcp-server core dependency to exact version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=$VERSION"
+
+      - name: Publish mcp-server
+        run: npm publish -w packages/mcp-server
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Build the standalone setup page (integrations/setup-page) with the release
+  # version stamped in the footer and the canonical supabase/setup.sql inlined,
+  # then attach it to the GitHub release as an asset. The page is generated
+  # here on every release - never built and committed by hand - so it cannot
+  # ship with a stale version stamp or an outdated inlined schema. build.js
+  # has no dependencies (plain node), so no npm install is needed.
+  setup-page:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to upload the release asset
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Sync version from release tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "const fs=require('fs'),f='packages/mcp-server/package.json',p=JSON.parse(fs.readFileSync(f));p.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')" "$VERSION"
+
+      - name: Build setup page
+        run: node integrations/setup-page/build.js --out dist/founders-os-setup.html
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/founders-os-setup.html --clobber

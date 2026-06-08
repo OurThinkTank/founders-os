@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Setup | Founder's OS</title>
+<meta name="description" content="Configure Founder's OS for any MCP client. Your credentials never leave this browser.">
+<meta name="robots" content="noindex">
+<style>
+/* ── Theme: reuses marketing site design tokens ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+
+:root {
+  --blue-50:#EFF6FF;--blue-100:#DBEAFE;--blue-200:#BFDBFE;--blue-300:#93C5FD;
+  --blue-400:#60A5FA;--blue-500:#3B82F6;--blue-600:#2563EB;--blue-700:#1D4ED8;
+  --blue-800:#1E3A8A;--blue-900:#1E3A5F;
+  --slate-50:#F8FAFC;--slate-100:#F1F5F9;--slate-200:#E2E8F0;--slate-300:#CBD5E1;
+  --slate-400:#94A3B8;--slate-500:#64748B;--slate-600:#475569;--slate-700:#334155;
+  --slate-800:#1E293B;--slate-900:#0F172A;--slate-950:#020617;
+  --green:#22C55E;--amber:#F59E0B;--red:#EF4444;
+  --font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'Cascadia Code',monospace;
+  --content-max:720px;--content-padding:24px;
+}
+:root[data-theme="dark"]{
+  --accent:var(--blue-400);--accent-hover:var(--blue-300);--accent-deep:var(--blue-600);--accent-text:var(--blue-400);
+  --text:var(--slate-50);--text-muted:var(--slate-400);--text-dim:var(--slate-500);
+  --bg:var(--slate-950);--bg-raised:var(--slate-900);--bg-surface:var(--slate-800);
+  --border:var(--slate-700);--border-light:var(--slate-600);
+  --grid-major:rgba(59,130,246,0.04);--grid-minor:rgba(59,130,246,0.02);
+  --input-bg:var(--slate-800);--card-shadow:rgba(96,165,250,0.08);
+  --btn-shadow:rgba(37,99,235,0.35);
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --accent:var(--blue-600);--accent-hover:var(--blue-700);--accent-deep:var(--blue-700);--accent-text:var(--blue-600);
+  --text:var(--slate-900);--text-muted:var(--slate-600);--text-dim:var(--slate-500);
+  --bg:#FEFDFB;--bg-raised:#FFFFFF;--bg-surface:var(--slate-100);
+  --border:var(--slate-200);--border-light:var(--slate-300);
+  --grid-major:rgba(59,130,246,0.07);--grid-minor:rgba(59,130,246,0.035);
+  --input-bg:#FFFFFF;--card-shadow:rgba(15,23,42,0.06);
+  --btn-shadow:rgba(37,99,235,0.2);
+  color-scheme:light;
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px;scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{
+  font-family:var(--font-sans);background:var(--bg);color:var(--text);line-height:1.6;
+  background-image:
+    linear-gradient(var(--grid-major) 1px,transparent 1px),
+    linear-gradient(90deg,var(--grid-major) 1px,transparent 1px),
+    linear-gradient(var(--grid-minor) 1px,transparent 1px),
+    linear-gradient(90deg,var(--grid-minor) 1px,transparent 1px);
+  background-size:120px 120px,120px 120px,24px 24px,24px 24px;
+  transition:background-color .2s,color .2s;
+}
+
+/* ── Layout ── */
+.page-header{
+  border-bottom:1px solid var(--border);padding:16px var(--content-padding);
+  display:flex;justify-content:space-between;align-items:center;
+  background:var(--bg);position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text)}
+.logo-text{font-size:20px;font-weight:700;letter-spacing:-0.02em}
+.logo-os{font-family:var(--font-mono);font-weight:300;color:var(--accent);letter-spacing:0.05em}
+.theme-toggle{
+  background:none;border:1px solid var(--border);border-radius:8px;padding:8px;
+  cursor:pointer;color:var(--text-muted);display:flex;align-items:center;
+}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
+
+.container{max-width:var(--content-max);margin:0 auto;padding:48px var(--content-padding) 96px}
+
+h1{font-size:clamp(28px,5vw,40px);font-weight:800;letter-spacing:-0.02em;line-height:1.15;margin-bottom:8px}
+.subtitle{font-size:17px;color:var(--text-muted);margin-bottom:12px;line-height:1.6}
+.security-badge{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--green);background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);
+  padding:6px 14px;border-radius:20px;margin-bottom:40px;
+}
+
+/* ── Plain-language explainer ── */
+.explainer{border:1px solid var(--border);border-radius:12px;margin-bottom:32px;background:linear-gradient(180deg,rgba(59,130,246,0.06),rgba(59,130,246,0.02));overflow:hidden;transition:border-color .2s}
+.explainer:hover,.explainer.open{border-color:var(--accent)}
+.explainer-toggle{display:flex;align-items:center;gap:14px;width:100%;text-align:left;cursor:pointer;background:none;border:none;color:var(--text);padding:18px 22px;font-family:inherit}
+.explainer-icon{width:38px;height:38px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.25);color:var(--accent);font-size:20px;font-weight:700}
+.explainer-toggle-text{flex:1}
+.explainer-title{font-size:16px;font-weight:700;letter-spacing:-0.01em}
+.explainer-sub{font-size:13px;color:var(--text-dim);margin-top:1px}
+.explainer-chevron{color:var(--text-dim);font-size:18px;transition:transform .25s;flex-shrink:0}
+.explainer.open .explainer-chevron{transform:rotate(180deg)}
+.explainer-body{display:grid;grid-template-rows:0fr;transition:grid-template-rows .28s ease}
+.explainer.open .explainer-body{grid-template-rows:1fr}
+.explainer-body-inner{overflow:hidden}
+.explainer-content{padding:4px 22px 22px;color:var(--text-muted);font-size:15px;line-height:1.65}
+.explainer-content p{margin-bottom:14px}
+.explainer-content strong{color:var(--text);font-weight:600}
+.explainer-content a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.need-cards{display:flex;gap:12px;margin:6px 0 16px}
+.need-card{flex:1;background:var(--bg-raised);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.need-card-label{font-family:var(--font-mono);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+.need-card-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px}
+.need-card-desc{font-size:13px;color:var(--text-dim);line-height:1.5}
+.explainer-meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:4px;padding-top:14px;border-top:1px solid var(--border)}
+.meta-pill{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);background:var(--bg-surface);border:1px solid var(--border);border-radius:20px;padding:5px 12px}
+@media(max-width:560px){.need-cards{flex-direction:column}}
+
+/* ── Paste Config ── */
+.paste-config-box{margin-bottom:24px}
+.paste-label{font-size:14px;color:var(--text-dim);margin-bottom:8px}
+.paste-config-box textarea{
+  width:100%;padding:12px;font-family:var(--font-mono);font-size:13px;
+  line-height:1.5;background:var(--bg-raised);color:var(--text);border:1px dashed var(--border);
+  border-radius:8px;resize:vertical;box-sizing:border-box;
+}
+.paste-config-box textarea:focus{outline:none;border-color:var(--accent);border-style:solid}
+.paste-actions{display:flex;align-items:center;gap:12px;margin-top:8px}
+.btn-sm{padding:6px 16px;font-size:13px}
+.paste-status{font-size:13px;color:var(--green);transition:opacity .3s}
+.paste-status.error{color:var(--red)}
+@keyframes field-flash{
+  0%{background-color:rgba(34,197,94,0.2)}
+  100%{background-color:transparent}
+}
+.field-filled{animation:field-flash 1.2s ease-out}
+
+/* ── Steps ── */
+.step{
+  background:var(--bg-raised);border:1px solid var(--border);border-radius:12px;
+  margin-bottom:16px;overflow:hidden;transition:border-color .2s;
+}
+.step.active{border-color:var(--accent)}
+.step.completed{border-color:var(--green)}
+.step-header{
+  display:flex;align-items:center;gap:12px;padding:20px 24px;cursor:pointer;
+  user-select:none;-webkit-user-select:none;
+}
+.step-number{
+  width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-mono);font-size:13px;font-weight:600;flex-shrink:0;
+  background:var(--bg-surface);color:var(--text-muted);border:1px solid var(--border);
+  transition:all .2s;
+}
+.step.active .step-number{background:var(--accent-deep);color:white;border-color:var(--accent-deep)}
+.step.completed .step-number{background:var(--green);color:white;border-color:var(--green)}
+.step-title{font-size:16px;font-weight:600;flex:1}
+.step-chevron{color:var(--text-dim);transition:transform .2s;font-size:18px}
+.step.open .step-chevron{transform:rotate(180deg)}
+.step-body{display:none;padding:0 24px 24px;border-top:1px solid var(--border)}
+.step.open .step-body{display:block}
+
+/* ── Form Fields ── */
+.field{margin-bottom:20px}
+.field:last-child{margin-bottom:0}
+.field-label{display:block;font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text)}
+.field-hint{font-size:12px;color:var(--text-dim);margin-top:4px}
+.field-row{display:flex;gap:12px}
+.field-row .field{flex:1}
+
+input[type="text"],input[type="password"],input[type="number"],select{
+  width:100%;padding:10px 14px;font-family:var(--font-mono);font-size:14px;
+  background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;
+  outline:none;transition:border-color .15s;
+}
+input:focus,select:focus{border-color:var(--accent)}
+input.invalid{border-color:var(--red)}
+select{cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2394A3B8' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;padding-right:32px;
+}
+
+.password-wrap{position:relative}
+.password-wrap input{padding-right:44px}
+.password-toggle{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  background:none;border:none;color:var(--text-dim);cursor:pointer;padding:4px 6px;
+  font-size:12px;font-family:var(--font-mono);
+}
+.password-toggle:hover{color:var(--accent)}
+
+/* ── Radio pills ── */
+.radio-group{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+.radio-pill{
+  flex:1;min-width:120px;text-align:center;
+  padding:10px 16px;border:1px solid var(--border);border-radius:8px;
+  cursor:pointer;font-size:14px;font-weight:500;color:var(--text-muted);
+  transition:all .15s;background:var(--bg-surface);
+}
+.radio-pill:hover{border-color:var(--accent);color:var(--text)}
+.radio-pill.selected{
+  border-color:var(--accent);color:var(--accent);
+  background:rgba(59,130,246,0.08);font-weight:600;
+}
+.radio-pill input{display:none}
+
+.provider-fields{display:none}
+.provider-fields.visible{display:block}
+
+/* ── Notice ── */
+.notice{
+  font-size:13px;color:var(--text-dim);background:rgba(245,158,11,0.06);
+  border:1px solid rgba(245,158,11,0.15);border-radius:8px;padding:10px 14px;
+  margin-top:16px;line-height:1.5;
+}
+.notice-info{
+  background:rgba(59,130,246,0.06);border-color:rgba(59,130,246,0.15);color:var(--text-muted);
+}
+
+/* ── Buttons ── */
+.btn{
+  display:inline-flex;align-items:center;gap:8px;padding:12px 24px;border-radius:8px;
+  font-family:var(--font-sans);font-size:14px;font-weight:600;cursor:pointer;
+  border:2px solid transparent;transition:all .2s;text-decoration:none;
+}
+.btn-primary{background:var(--accent-deep);color:white}
+.btn-primary:hover{background:var(--blue-500);transform:translateY(-1px);box-shadow:0 4px 16px var(--btn-shadow)}
+.btn-primary:disabled{opacity:0.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-secondary{background:var(--bg-surface);color:var(--text);border-color:var(--border)}
+.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+.btn-ghost{background:transparent;color:var(--text-muted);border-color:var(--border);padding:8px 16px;font-size:13px}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn-danger{background:transparent;color:var(--red);border-color:rgba(239,68,68,0.3);padding:8px 16px;font-size:13px}
+.btn-danger:hover{border-color:var(--red);background:rgba(239,68,68,0.06)}
+
+.step-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
+.latest-toggle{display:flex;align-items:flex-start;gap:10px;margin-top:16px;font-size:13px;color:var(--text-muted);line-height:1.5;cursor:pointer}
+.latest-toggle input{width:auto;margin-top:3px;flex-shrink:0;cursor:pointer}
+.latest-toggle code{font-family:var(--font-mono);font-size:0.9em;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+
+/* ── Checkboxes ── */
+.checkbox-group{display:flex;gap:12px;flex-wrap:wrap}
+.checkbox-card{
+  flex:1;min-width:160px;padding:16px;border:1px solid var(--border);border-radius:8px;
+  cursor:pointer;transition:all .15s;background:var(--bg-surface);text-align:center;
+}
+.checkbox-card:hover{border-color:var(--accent)}
+.checkbox-card.selected{border-color:var(--accent);background:rgba(59,130,246,0.08)}
+.checkbox-card input{display:none}
+.checkbox-card-title{font-size:15px;font-weight:600;margin-bottom:4px}
+.checkbox-card-desc{font-size:12px;color:var(--text-dim)}
+
+/* ── Output Panel ── */
+.output-panel{
+  display:none;margin-top:32px;background:var(--bg-raised);border:1px solid var(--border);
+  border-radius:12px;overflow:hidden;
+}
+.output-panel.visible{display:block}
+.output-tabs{display:flex;border-bottom:1px solid var(--border)}
+.output-tab{
+  padding:14px 24px;font-size:14px;font-weight:600;cursor:pointer;
+  color:var(--text-muted);border-bottom:2px solid transparent;transition:all .15s;
+  background:none;border-top:none;border-left:none;border-right:none;
+}
+.output-tab:hover{color:var(--text)}
+.output-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.output-content{display:none;padding:24px}
+.output-content.visible{display:block}
+
+.output-actions{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.code-block{
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
+  padding:16px;font-family:var(--font-mono);font-size:12px;line-height:1.6;
+  overflow-x:auto;white-space:pre;max-height:400px;overflow-y:auto;color:var(--text);
+}
+.copied-toast{
+  font-size:12px;color:var(--green);font-weight:600;opacity:0;transition:opacity .2s;
+}
+.copied-toast.show{opacity:1}
+
+.cc-overview{
+  background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);
+  border-radius:10px;padding:20px 24px;margin-bottom:28px;
+}
+.cc-overview-title{font-size:16px;font-weight:700;margin-bottom:14px;color:var(--text)}
+.cc-overview-items{display:flex;gap:16px}
+.cc-overview-item{flex:1;background:var(--bg-raised);border-radius:8px;padding:14px 16px}
+.cc-overview-label{font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--accent);margin-bottom:6px}
+.cc-overview-desc{font-size:13px;line-height:1.5;color:var(--text-dim)}
+.cc-section{margin-bottom:28px}
+.cc-section-header{font-size:17px;font-weight:700;margin-bottom:12px;color:var(--text)}
+@media(max-width:600px){.cc-overview-items{flex-direction:column}}
+
+.install-steps{
+  background:var(--bg-raised);border:1px solid var(--border);border-radius:10px;
+  padding:20px 24px;margin:20px 0;
+}
+.install-steps-title{font-size:15px;font-weight:700;margin-bottom:12px;color:var(--text)}
+.install-steps ol{margin:0;padding-left:20px}
+.install-steps li{font-size:15px;line-height:1.7;color:var(--text)}
+.install-note{font-size:13px;color:var(--text-dim);margin:10px 0 0}
+.install-note a{color:var(--accent);text-decoration:underline}
+
+.warning-box{
+  font-size:13px;color:var(--amber);background:rgba(245,158,11,0.06);
+  border:1px solid rgba(245,158,11,0.15);border-radius:8px;padding:12px 14px;
+  margin-top:16px;line-height:1.5;
+}
+
+/* ── Footer ── */
+.page-footer{
+  text-align:center;padding:32px var(--content-padding);
+  font-size:13px;color:var(--text-dim);border-top:1px solid var(--border);
+}
+.page-footer a{color:var(--accent);text-decoration:underline}
+
+/* ── Responsive ── */
+@media(max-width:600px){
+  .container{padding:32px 16px 64px}
+  .field-row{flex-direction:column;gap:0}
+  .radio-group{flex-direction:column}
+  .checkbox-group{flex-direction:column}
+  .step-header{padding:16px}
+  .step-body{padding:0 16px 16px}
+}
+</style>
+<script>
+(function(){
+  var p=localStorage.getItem('theme')||'system';
+  var r=p==='system'?(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'):p;
+  document.documentElement.setAttribute('data-theme',r);
+})();
+</script>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header class="page-header">
+  <a href="/" class="logo">
+    <svg width="28" height="28" viewBox="0 0 128 128"><rect width="128" height="128" rx="8" fill="#0F172A"/><g opacity=".3"><circle cx="12" cy="12" r="1.2" fill="#60A5FA"/><circle cx="28" cy="12" r="1.2" fill="#60A5FA"/><circle cx="44" cy="12" r="1.2" fill="#60A5FA"/><circle cx="12" cy="28" r="1.2" fill="#60A5FA"/><circle cx="12" cy="44" r="1.2" fill="#60A5FA"/></g><rect x="28" y="20" width="56" height="88" rx="2" stroke="#60A5FA" stroke-width="2.5" fill="none"/><line x1="38" y1="20" x2="38" y2="108" stroke="#60A5FA" stroke-width="3"/><line x1="38" y1="42" x2="76" y2="42" stroke="#60A5FA" stroke-width="2.5"/><line x1="38" y1="62" x2="62" y2="62" stroke="#60A5FA" stroke-width="2.5"/><line x1="92" y1="20" x2="92" y2="108" stroke="#60A5FA" stroke-width=".5" opacity=".3" stroke-dasharray="2 2"/><line x1="88" y1="20" x2="96" y2="20" stroke="#60A5FA" stroke-width=".5" opacity=".3"/><line x1="88" y1="108" x2="96" y2="108" stroke="#60A5FA" stroke-width=".5" opacity=".3"/></svg>
+    <span class="logo-text">Founder's <span class="logo-os">OS</span></span>
+  </a>
+  <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+  </button>
+</header>
+
+<!-- ── Main ── -->
+<main class="container">
+  <h1>Setup</h1>
+  <p class="subtitle">Connect your Supabase project and embedding provider, then copy a ready-to-use config for your MCP client.</p>
+  <div class="security-badge">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    Your credentials never leave this browser
+  </div>
+
+  <!-- Plain-language explainer (collapsed by default) -->
+  <div class="explainer" id="explainer">
+    <button class="explainer-toggle" id="explainerToggle" type="button" aria-expanded="false" aria-controls="explainerBody">
+      <span class="explainer-icon">?</span>
+      <span class="explainer-toggle-text">
+        <span class="explainer-title">New here? What am I actually doing on this page?</span>
+        <span class="explainer-sub">A 30-second, no-jargon explainer. Skip it if you know the drill.</span>
+      </span>
+      <span class="explainer-chevron">&#9662;</span>
+    </button>
+    <div class="explainer-body" id="explainerBody">
+      <div class="explainer-body-inner">
+        <div class="explainer-content">
+          <p><strong>FoundersOS gives your AI assistant a memory of how your company runs</strong>, so you stop re-explaining the same context every time you open it.</p>
+          <p>This page sets up the two things that make that work:</p>
+          <div class="need-cards">
+            <div class="need-card">
+              <div class="need-card-label">1 &middot; Database</div>
+              <div class="need-card-title">Supabase (free)</div>
+              <div class="need-card-desc">A place where your AI's memory and your company info live. You create it and you own it.</div>
+            </div>
+            <div class="need-card">
+              <div class="need-card-label">2 &middot; Memory engine</div>
+              <div class="need-card-title">Embedding provider</div>
+              <div class="need-card-desc">Helps your AI find the right memory at the right moment. Pick one. OpenAI is the simplest if unsure.</div>
+            </div>
+          </div>
+          <p>At the end you get a small block of settings to paste into your AI app (like <strong>Claude Desktop</strong>), plus a one-time database setup you run once. We walk you through each click.</p>
+          <p>Want more detail? Read the <a href="https://foundersmcp.com/docs/getting-started/" target="_blank" rel="noopener">getting started guide</a> or learn <a href="https://foundersmcp.com/docs/recipes/embedding-providers/" target="_blank" rel="noopener">how to pick an embedding provider</a>.</p>
+          <div class="explainer-meta">
+            <span class="meta-pill">About 10 minutes</span>
+            <span class="meta-pill">Mostly copy and paste</span>
+            <span class="meta-pill">Your keys stay in your browser</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Paste Config -->
+  <div class="paste-config-box" id="pasteBox">
+    <div class="paste-label">Have an existing config? Paste it here</div>
+    <textarea id="pasteInput" rows="5" placeholder='Paste your config in any format:&#10;JSON, .env, or key=value lines&#10;&#10;SUPABASE_URL=https://...&#10;SUPABASE_SECRET_KEY=sb_secret_...'  spellcheck="false"></textarea>
+    <div class="paste-actions">
+      <button class="btn btn-primary btn-sm" id="pasteApply">Apply</button>
+      <span class="paste-status" id="pasteStatus"></span>
+    </div>
+  </div>
+
+  <!-- ── Step 1: Supabase ── -->
+  <div class="step active open" id="step1">
+    <div class="step-header" onclick="toggleStep(1)">
+      <div class="step-number">1</div>
+      <div class="step-title">Supabase Connection</div>
+      <div class="step-chevron">&#9662;</div>
+    </div>
+    <div class="step-body">
+      <div class="field">
+        <label class="field-label" for="supabaseUrl">Supabase URL</label>
+        <input type="text" id="supabaseUrl" placeholder="https://abcdefghijklmnopqrst.supabase.co" autocomplete="off" spellcheck="false">
+        <div class="field-hint">Your project URL from Supabase dashboard > Settings > API</div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="supabaseKey">Supabase Secret Key</label>
+        <div class="password-wrap">
+          <input type="password" id="supabaseKey" placeholder="eyJ... or sb_secret_..." autocomplete="off">
+          <button type="button" class="password-toggle" onclick="togglePassword(this)">show</button>
+        </div>
+        <div class="field-hint">Service role key (not the anon key) from Settings > API</div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label" for="companyId">Company ID</label>
+          <input type="text" id="companyId" placeholder="default" value="default" autocomplete="off" spellcheck="false">
+          <div class="field-hint">Shared across your team. "default" is fine for solo use.</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="userId">User ID</label>
+          <input type="text" id="userId" placeholder="your-name" autocomplete="off" spellcheck="false">
+          <div class="field-hint">Your display name or handle</div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="timezone">Timezone</label>
+        <select id="timezone"></select>
+        <div class="field-hint">Affects date display in tasks and CRM. Auto-detected from your browser.</div>
+      </div>
+      <div class="step-actions">
+        <button class="btn btn-primary" onclick="validateStep1()">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Step 2: Embedding Provider ── -->
+  <div class="step" id="step2">
+    <div class="step-header" onclick="toggleStep(2)">
+      <div class="step-number">2</div>
+      <div class="step-title">Embedding Provider</div>
+      <div class="step-chevron">&#9662;</div>
+    </div>
+    <div class="step-body">
+      <div class="radio-group" id="providerGroup">
+        <label class="radio-pill selected" onclick="selectProvider('openai')">
+          <input type="radio" name="provider" value="openai" checked> OpenAI
+        </label>
+        <label class="radio-pill" onclick="selectProvider('bedrock')">
+          <input type="radio" name="provider" value="bedrock"> AWS Bedrock
+        </label>
+        <label class="radio-pill" onclick="selectProvider('ollama')">
+          <input type="radio" name="provider" value="ollama"> Ollama
+        </label>
+      </div>
+
+      <!-- OpenAI fields -->
+      <div class="provider-fields visible" id="fields-openai">
+        <div class="field">
+          <label class="field-label" for="openaiKey">OpenAI API Key</label>
+          <div class="password-wrap">
+            <input type="password" id="openaiKey" placeholder="sk-proj-..." autocomplete="off">
+            <button type="button" class="password-toggle" onclick="togglePassword(this)">show</button>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label" for="openaiModel">Model</label>
+            <input type="text" id="openaiModel" value="text-embedding-3-small" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label class="field-label" for="openaiDim">Dimensions</label>
+            <input type="number" id="openaiDim" value="1536" min="1">
+          </div>
+        </div>
+      </div>
+
+      <!-- Bedrock fields -->
+      <div class="provider-fields" id="fields-bedrock">
+        <div class="field">
+          <label class="field-label" for="awsRegion">AWS Region</label>
+          <select id="awsRegion">
+            <option value="us-east-1" selected>us-east-1</option>
+            <option value="us-west-2">us-west-2</option>
+            <option value="eu-west-1">eu-west-1</option>
+            <option value="eu-central-1">eu-central-1</option>
+            <option value="ap-southeast-1">ap-southeast-1</option>
+            <option value="ap-northeast-1">ap-northeast-1</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="awsAccessKey">AWS Access Key ID</label>
+          <div class="password-wrap">
+            <input type="password" id="awsAccessKey" placeholder="Optional if using IAM role" autocomplete="off">
+            <button type="button" class="password-toggle" onclick="togglePassword(this)">show</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="awsSecretKey">AWS Secret Access Key</label>
+          <div class="password-wrap">
+            <input type="password" id="awsSecretKey" placeholder="Optional if using IAM role" autocomplete="off">
+            <button type="button" class="password-toggle" onclick="togglePassword(this)">show</button>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label" for="bedrockModel">Model</label>
+            <input type="text" id="bedrockModel" value="amazon.nova-2-multimodal-embeddings-v1:0" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label class="field-label" for="bedrockDim">Dimensions</label>
+            <input type="number" id="bedrockDim" value="1024" min="1">
+          </div>
+        </div>
+        <div class="notice">If you're running on AWS with an IAM role attached, you can leave the access key fields empty.</div>
+      </div>
+
+      <!-- Ollama fields -->
+      <div class="provider-fields" id="fields-ollama">
+        <div class="field">
+          <label class="field-label" for="ollamaUrl">Ollama URL</label>
+          <input type="text" id="ollamaUrl" value="http://localhost:11434" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label" for="ollamaModel">Model</label>
+            <input type="text" id="ollamaModel" value="nomic-embed-text" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label class="field-label" for="ollamaDim">Dimensions</label>
+            <input type="number" id="ollamaDim" value="768" min="1">
+          </div>
+        </div>
+        <div class="notice">Ollama runs locally on your machine. Make sure it's installed and running.</div>
+      </div>
+
+      <div class="notice notice-info" style="margin-top:20px">
+        <strong>Dimensions are handled for you.</strong> After you generate, we'll give you a database setup file with this exact size already filled in - you just run it in Supabase. If unsure, leave the default for your chosen provider.
+      </div>
+
+      <div class="step-actions">
+        <button class="btn btn-ghost" onclick="goToStep(1)">Back</button>
+        <button class="btn btn-primary" onclick="validateStep2()">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Step 3: Generate ── -->
+  <div class="step" id="step3">
+    <div class="step-header" onclick="toggleStep(3)">
+      <div class="step-number">3</div>
+      <div class="step-title">Generate Your Config</div>
+      <div class="step-chevron">&#9662;</div>
+    </div>
+    <div class="step-body">
+      <p class="install-note">Founders OS runs as an MCP server through <code>npx</code>, which ships with <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js</a> (install it first if you don't have it). Generate the config below, then paste it into your client: Claude Desktop, Cowork, Cursor, Continue.dev, Zed, or any spec-compliant MCP client.</p>
+      <label class="latest-toggle">
+        <input type="checkbox" id="useLatest" checked>
+        <span>Stay on the latest version <code>(@latest)</code> - your client pulls the newest release each time it restarts. Uncheck to pin the current version instead.</span>
+      </label>
+      <div class="step-actions">
+        <button class="btn btn-ghost" onclick="goToStep(2)">Back</button>
+        <button class="btn btn-primary" onclick="generateOutput()" id="generateBtn">Generate Config</button>
+        <button class="btn btn-danger" onclick="clearAll()" style="margin-left:auto">Clear All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Output Panel ── -->
+  <div class="output-panel" id="outputPanel">
+
+    <!-- Step 1: Database setup (do this first) -->
+    <div class="cc-section" id="dbSetupSection">
+      <div class="cc-section-header">Step 1: Set up your database (do this first)</div>
+      <div class="install-steps">
+        <div class="install-steps-title">One-time setup, takes about a minute</div>
+        <ol>
+          <li>Open your Supabase project in your web browser (go to supabase.com and open your project).</li>
+          <li>In the menu on the left, click <strong>SQL Editor</strong>.</li>
+          <li>Click <strong>New query</strong> near the top.</li>
+          <li>Click <strong>Copy SQL</strong> below, then click into the big empty box in Supabase and paste (<code>Cmd+V</code> on Mac, <code>Ctrl+V</code> on Windows).</li>
+          <li>Click the green <strong>Run</strong> button at the bottom right (or press <code>Cmd+Enter</code> / <code>Ctrl+Enter</code>).</li>
+          <li>When you see <strong>Success. No rows returned</strong>, your database is ready. Move on to Step 2.</li>
+        </ol>
+      </div>
+      <div class="output-actions">
+        <button class="btn btn-primary" onclick="copyToClipboard('dbSqlCode','toast-db-copy')">Copy SQL</button>
+        <button class="btn btn-secondary" onclick="downloadSetupSql()">Download setup.sql</button>
+        <span class="copied-toast" id="toast-db-copy">Copied!</span>
+        <span class="copied-toast" id="toast-db-download">Downloaded!</span>
+      </div>
+      <div class="code-block" id="dbSqlCode">Loading database setup...</div>
+      <div class="notice notice-info" id="dbDimNote" style="margin-top:16px">The size number in this setup code is matched to the embedding provider you chose. Please do not change it, or memory search will not work.</div>
+    </div>
+
+    <!-- Step 2: MCP config -->
+    <div class="cc-section">
+      <div class="cc-section-header">Step 2: Add your MCP config</div>
+      <div class="install-steps">
+        <div class="install-steps-title">How to install</div>
+        <ol>
+          <li>Open your MCP client's config (in <strong>Claude Desktop</strong>, the MCP servers section of your settings)</li>
+          <li>Paste the JSON below</li>
+          <li>Restart the client</li>
+        </ol>
+        <p class="install-note">Or add it to your project's <code>.mcp.json</code> file.</p>
+      </div>
+      <div class="output-actions">
+        <button class="btn btn-primary" onclick="copyToClipboard('ccConfigCode','toast-cc-config')">Copy to Clipboard</button>
+        <button class="btn btn-secondary" onclick="downloadConfig()">Download mcp.json</button>
+        <span class="copied-toast" id="toast-cc-config">Copied!</span>
+        <span class="copied-toast" id="toast-download">Downloaded!</span>
+      </div>
+      <div class="code-block" id="ccConfigCode"></div>
+      <div class="warning-box">This config contains your Supabase secret key. Treat it like a password - don't share it or commit it to git.</div>
+    </div>
+  </div>
+</main>
+
+<!-- Canonical setup.sql, inlined at build time by build.js. Falls back to a
+     GitHub fetch when this still holds the placeholder (unbuilt dev copy). -->
+<script id="setupSqlInlined" type="text/plain">__SETUP_SQL__</script>
+
+<footer class="page-footer">
+  <p>Founder's OS - <span id="versionTag">v0.14.0</span> - <a href="https://github.com/OurThinkTank/founders-os">GitHub</a></p>
+</footer>
+
+<!-- ══════════════════════════════════════
+     Application Logic
+     ══════════════════════════════════════ -->
+<script>
+/* ── Globals ── */
+var currentStep = 1;
+
+
+/* ── Theme Toggle ── */
+document.getElementById('themeToggle').addEventListener('click', function() {
+  var current = document.documentElement.getAttribute('data-theme');
+  var next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+});
+
+/* ── Timezone Dropdown ── */
+(function() {
+  var sel = document.getElementById('timezone');
+  var detected = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  var zones = [
+    'UTC','US/Eastern','US/Central','US/Mountain','US/Pacific',
+    'America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
+    'America/Toronto','America/Vancouver','America/Sao_Paulo','America/Mexico_City',
+    'Europe/London','Europe/Paris','Europe/Berlin','Europe/Amsterdam','Europe/Madrid',
+    'Europe/Rome','Europe/Zurich','Europe/Stockholm','Europe/Warsaw',
+    'Asia/Tokyo','Asia/Shanghai','Asia/Singapore','Asia/Mumbai','Asia/Dubai',
+    'Asia/Seoul','Asia/Hong_Kong','Asia/Kolkata',
+    'Australia/Sydney','Australia/Melbourne','Pacific/Auckland'
+  ];
+  // Ensure detected zone is in the list
+  if (zones.indexOf(detected) === -1) zones.unshift(detected);
+  for (var i = 0; i < zones.length; i++) {
+    var opt = document.createElement('option');
+    opt.value = zones[i]; opt.textContent = zones[i];
+    if (zones[i] === detected) opt.selected = true;
+    sel.appendChild(opt);
+  }
+})();
+
+/* ── Step Navigation ── */
+function toggleStep(n) {
+  var el = document.getElementById('step' + n);
+  if (el.classList.contains('open')) { el.classList.remove('open'); }
+  else { el.classList.add('open'); }
+}
+
+function goToStep(n) {
+  for (var i = 1; i <= 3; i++) {
+    var el = document.getElementById('step' + i);
+    el.classList.remove('open', 'active');
+    if (i < n) el.classList.add('completed');
+  }
+  var target = document.getElementById('step' + n);
+  target.classList.add('active', 'open');
+  currentStep = n;
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ── Password Toggle ── */
+function togglePassword(btn) {
+  var input = btn.parentElement.querySelector('input');
+  if (input.type === 'password') { input.type = 'text'; btn.textContent = 'hide'; }
+  else { input.type = 'password'; btn.textContent = 'show'; }
+}
+
+/* ── Provider Selection ── */
+function selectProvider(provider) {
+  var pills = document.querySelectorAll('#providerGroup .radio-pill');
+  for (var i = 0; i < pills.length; i++) pills[i].classList.remove('selected');
+  event.currentTarget.classList.add('selected');
+  var fields = document.querySelectorAll('.provider-fields');
+  for (var i = 0; i < fields.length; i++) fields[i].classList.remove('visible');
+  document.getElementById('fields-' + provider).classList.add('visible');
+}
+
+/* ── Paste Config ── */
+// Known env var names we care about
+var KNOWN_KEYS = [
+  'SUPABASE_URL','SUPABASE_SECRET_KEY','SUPABASE_SERVICE_ROLE_KEY',
+  'FOUNDERS_OS_COMPANY_ID','FOUNDERS_OS_USER_ID','FOUNDERS_OS_TIMEZONE',
+  'EMBEDDING_PROVIDER','EMBEDDING_MODEL','EMBEDDING_DIM',
+  'OPENAI_API_KEY','AWS_DEFAULT_REGION','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY',
+  'OLLAMA_BASE_URL'
+];
+
+function parseEnvFromAnything(raw) {
+  var env = {};
+
+  // Strategy 1: try JSON parse (handles clean JSON, or JSON with trailing commas after cleanup)
+  try {
+    var cleaned = raw
+      .replace(/,\s*([}\]])/g, '$1')       // trailing commas
+      .replace(/(['"])?([A-Z_]+)\1\s*:/g, '"$2":'); // unquoted keys
+    var first = cleaned.indexOf('{');
+    var last = cleaned.lastIndexOf('}');
+    if (first !== -1 && last > first) {
+      var jsonStr = cleaned.substring(first, last + 1);
+      var parsed = JSON.parse(jsonStr);
+      if (parsed.mcpServers) {
+        var serverKeys = Object.keys(parsed.mcpServers);
+        if (serverKeys.length > 0) {
+          var server = parsed.mcpServers[serverKeys[0]];
+          if (server && server.env) { env = server.env; return env; }
+        }
+      }
+      if (parsed.env && typeof parsed.env === 'object') { env = parsed.env; return env; }
+      var topKeys = Object.keys(parsed);
+      if (topKeys.some(function(k) { return KNOWN_KEYS.indexOf(k) !== -1; })) { return parsed; }
+      for (var i = 0; i < topKeys.length; i++) {
+        var v = parsed[topKeys[i]];
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          var subKeys = Object.keys(v);
+          if (subKeys.some(function(k) { return KNOWN_KEYS.indexOf(k) !== -1; })) { return v; }
+        }
+      }
+    }
+  } catch(e) { /* JSON parse failed, continue to line-by-line */ }
+
+  // Strategy 2: line-by-line for .env, export, YAML-ish, or messy copy-paste
+  var lines = raw.split(/\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    line = line.replace(/^export\s+/, '');
+    var jsonMatch = line.match(/["']?([A-Z][A-Z0-9_]+)["']?\s*:\s*["']?([^"',}\]]+)["']?/);
+    if (jsonMatch && KNOWN_KEYS.indexOf(jsonMatch[1]) !== -1) {
+      env[jsonMatch[1]] = jsonMatch[2].trim();
+      continue;
+    }
+    var envMatch = line.match(/^([A-Z][A-Z0-9_]+)\s*=\s*["']?(.*?)["']?\s*$/);
+    if (envMatch && KNOWN_KEYS.indexOf(envMatch[1]) !== -1) {
+      env[envMatch[1]] = envMatch[2].trim();
+      continue;
+    }
+  }
+
+  return env;
+}
+
+document.getElementById('pasteApply').addEventListener('click', function() {
+  var raw = document.getElementById('pasteInput').value.trim();
+  var status = document.getElementById('pasteStatus');
+  status.className = 'paste-status';
+  status.textContent = '';
+  if (!raw) return;
+
+  var env = parseEnvFromAnything(raw);
+
+  if (!env || Object.keys(env).length === 0) {
+    status.className = 'paste-status error';
+    status.textContent = 'No recognized config values found';
+    return;
+  }
+
+  var filled = [];
+
+  function setField(id, val) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.value = val;
+    filled.push(id);
+  }
+
+  function flashFilled() {
+    filled.forEach(function(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('field-filled');
+      void el.offsetWidth;
+      el.classList.add('field-filled');
+    });
+  }
+
+  // Step 1 fields
+  var fieldMap = {
+    'SUPABASE_URL': 'supabaseUrl',
+    'SUPABASE_SECRET_KEY': 'supabaseKey',
+    'SUPABASE_SERVICE_ROLE_KEY': 'supabaseKey',
+    'FOUNDERS_OS_COMPANY_ID': 'companyId',
+    'FOUNDERS_OS_USER_ID': 'userId'
+  };
+  for (var envKey in fieldMap) {
+    if (env[envKey]) setField(fieldMap[envKey], env[envKey]);
+  }
+
+  // Timezone
+  if (env.FOUNDERS_OS_TIMEZONE) {
+    var tzSel = document.getElementById('timezone');
+    var found = false;
+    for (var i = 0; i < tzSel.options.length; i++) {
+      if (tzSel.options[i].value === env.FOUNDERS_OS_TIMEZONE) { found = true; break; }
+    }
+    if (!found) {
+      var opt = document.createElement('option');
+      opt.value = env.FOUNDERS_OS_TIMEZONE; opt.textContent = env.FOUNDERS_OS_TIMEZONE;
+      tzSel.insertBefore(opt, tzSel.firstChild);
+    }
+    setField('timezone', env.FOUNDERS_OS_TIMEZONE);
+  }
+
+  // Provider selection
+  var provider = env.EMBEDDING_PROVIDER;
+  if (!provider || ['openai','bedrock','ollama'].indexOf(provider) === -1) {
+    if (env.OPENAI_API_KEY) provider = 'openai';
+    else if (env.AWS_ACCESS_KEY_ID || env.AWS_SECRET_ACCESS_KEY || env.AWS_DEFAULT_REGION) provider = 'bedrock';
+    else if (env.OLLAMA_BASE_URL) provider = 'ollama';
+  }
+  if (provider) {
+    var pills = document.querySelectorAll('#providerGroup .radio-pill');
+    for (var i = 0; i < pills.length; i++) pills[i].classList.remove('selected');
+    var target = document.querySelector('.radio-pill[data-provider="' + provider + '"]');
+    if (target) {
+      target.classList.add('selected');
+      target.querySelector('input').checked = true;
+    }
+    var fields = document.querySelectorAll('.provider-fields');
+    for (var i = 0; i < fields.length; i++) fields[i].classList.remove('visible');
+    document.getElementById('fields-' + provider).classList.add('visible');
+  }
+
+  // Provider-specific fields
+  var providerFields = {
+    'openai': { 'OPENAI_API_KEY':'openaiKey','EMBEDDING_MODEL':'openaiModel','EMBEDDING_DIM':'openaiDim' },
+    'bedrock': { 'AWS_DEFAULT_REGION':'awsRegion','AWS_ACCESS_KEY_ID':'awsAccessKey','AWS_SECRET_ACCESS_KEY':'awsSecretKey','EMBEDDING_MODEL':'bedrockModel','EMBEDDING_DIM':'bedrockDim' },
+    'ollama': { 'OLLAMA_BASE_URL':'ollamaUrl','EMBEDDING_MODEL':'ollamaModel','EMBEDDING_DIM':'ollamaDim' }
+  };
+  var activeProvider = provider || getProvider();
+  var pf = providerFields[activeProvider];
+  if (pf) {
+    for (var envKey in pf) {
+      if (env[envKey]) setField(pf[envKey], env[envKey]);
+    }
+  }
+
+  // Open steps that received values
+  var step1Keys = ['SUPABASE_URL','SUPABASE_SECRET_KEY','SUPABASE_SERVICE_ROLE_KEY','FOUNDERS_OS_COMPANY_ID','FOUNDERS_OS_USER_ID','FOUNDERS_OS_TIMEZONE'];
+  var step2Keys = ['EMBEDDING_PROVIDER','EMBEDDING_MODEL','EMBEDDING_DIM','OPENAI_API_KEY','AWS_DEFAULT_REGION','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','OLLAMA_BASE_URL'];
+  var hasStep1 = step1Keys.some(function(k) { return env[k]; });
+  var hasStep2 = step2Keys.some(function(k) { return env[k]; });
+
+  if (hasStep1) {
+    document.getElementById('step1').classList.add('active', 'open');
+  }
+  if (hasStep2) {
+    document.getElementById('step2').classList.add('active', 'open');
+  }
+
+  // Flash filled fields after steps are open
+  setTimeout(flashFilled, 100);
+
+  var n = filled.length;
+  status.className = 'paste-status';
+  status.textContent = 'Filled ' + n + ' field' + (n !== 1 ? 's' : '');
+  setTimeout(function() { status.textContent = ''; }, 4000);
+});
+
+/* ── Validation ── */
+function validateStep1() {
+  var url = document.getElementById('supabaseUrl').value.trim();
+  var key = document.getElementById('supabaseKey').value.trim();
+  var userId = document.getElementById('userId').value.trim();
+  var errors = [];
+
+  if (!/^https:\/\/[a-z0-9]{20}\.supabase\.co\/?$/.test(url)) {
+    errors.push('Supabase URL should match https://[20-char-ref].supabase.co');
+    document.getElementById('supabaseUrl').classList.add('invalid');
+  } else { document.getElementById('supabaseUrl').classList.remove('invalid'); }
+
+  if (!key.startsWith('eyJ') && !key.startsWith('sb_secret_')) {
+    errors.push('Secret key should start with eyJ (JWT) or sb_secret_');
+    document.getElementById('supabaseKey').classList.add('invalid');
+  } else { document.getElementById('supabaseKey').classList.remove('invalid'); }
+
+  if (!userId) {
+    errors.push('User ID is required');
+    document.getElementById('userId').classList.add('invalid');
+  } else { document.getElementById('userId').classList.remove('invalid'); }
+
+  if (errors.length) { alert(errors.join('\n')); return; }
+  goToStep(2);
+}
+
+function validateStep2() {
+  var provider = getProvider();
+  var errors = [];
+
+  if (provider === 'openai') {
+    var key = document.getElementById('openaiKey').value.trim();
+    if (!key.startsWith('sk-')) {
+      errors.push('OpenAI key should start with sk-');
+      document.getElementById('openaiKey').classList.add('invalid');
+    } else { document.getElementById('openaiKey').classList.remove('invalid'); }
+  }
+
+  if (provider === 'bedrock') {
+    var ak = document.getElementById('awsAccessKey').value.trim();
+    var sk = document.getElementById('awsSecretKey').value.trim();
+    if (ak && ak.length !== 20) {
+      errors.push('AWS Access Key ID should be 20 characters');
+      document.getElementById('awsAccessKey').classList.add('invalid');
+    } else { document.getElementById('awsAccessKey').classList.remove('invalid'); }
+    if (sk && sk.length !== 40) {
+      errors.push('AWS Secret Access Key should be 40 characters');
+      document.getElementById('awsSecretKey').classList.add('invalid');
+    } else { document.getElementById('awsSecretKey').classList.remove('invalid'); }
+  }
+
+  if (errors.length) { alert(errors.join('\n')); return; }
+  goToStep(3);
+}
+
+function getProvider() {
+  var radios = document.querySelectorAll('input[name="provider"]');
+  for (var i = 0; i < radios.length; i++) { if (radios[i].checked) return radios[i].value; }
+  return 'openai';
+}
+
+/* ── Build env object ── */
+function buildEnv() {
+  var provider = getProvider();
+  var env = {
+    SUPABASE_URL: document.getElementById('supabaseUrl').value.trim(),
+    SUPABASE_SECRET_KEY: document.getElementById('supabaseKey').value.trim(),
+    FOUNDERS_OS_COMPANY_ID: document.getElementById('companyId').value.trim() || 'default',
+    FOUNDERS_OS_USER_ID: document.getElementById('userId').value.trim(),
+    EMBEDDING_PROVIDER: provider
+  };
+
+  // Timezone (omit if browser-detected default matches UTC or user didn't change)
+  var tz = document.getElementById('timezone').value;
+  if (tz && tz !== 'UTC') env.FOUNDERS_OS_TIMEZONE = tz;
+
+  // Provider-specific
+  if (provider === 'openai') {
+    env.OPENAI_API_KEY = document.getElementById('openaiKey').value.trim();
+    var model = document.getElementById('openaiModel').value.trim();
+    if (model && model !== 'text-embedding-3-small') env.EMBEDDING_MODEL = model;
+    var dim = document.getElementById('openaiDim').value.trim();
+    if (dim && dim !== '1536') env.EMBEDDING_DIM = dim;
+  } else if (provider === 'bedrock') {
+    var ak = document.getElementById('awsAccessKey').value.trim();
+    var sk = document.getElementById('awsSecretKey').value.trim();
+    if (ak) env.AWS_ACCESS_KEY_ID = ak;
+    if (sk) env.AWS_SECRET_ACCESS_KEY = sk;
+    env.AWS_DEFAULT_REGION = document.getElementById('awsRegion').value;
+    var model = document.getElementById('bedrockModel').value.trim();
+    if (model && model !== 'amazon.nova-2-multimodal-embeddings-v1:0') env.EMBEDDING_MODEL = model;
+    var dim = document.getElementById('bedrockDim').value.trim();
+    if (dim && dim !== '1024') env.EMBEDDING_DIM = dim;
+  } else if (provider === 'ollama') {
+    var url = document.getElementById('ollamaUrl').value.trim();
+    if (url && url !== 'http://localhost:11434') env.OLLAMA_BASE_URL = url;
+    var model = document.getElementById('ollamaModel').value.trim();
+    if (model && model !== 'nomic-embed-text') env.EMBEDDING_MODEL = model;
+    var dim = document.getElementById('ollamaDim').value.trim();
+    if (dim && dim !== '768') env.EMBEDDING_DIM = dim;
+  }
+
+  return env;
+}
+
+function buildMcpConfig() {
+  var useLatest = document.getElementById('useLatest').checked;
+  var pkg = '@ourthinktank/founders-os' + (useLatest ? '@latest' : '');
+  return { mcpServers: { 'founders-os': { command: 'npx', args: ['-y', pkg], env: buildEnv() } } };
+}
+
+
+/* ── Database setup SQL ──────────────────────────────────────
+   The page generates a ready-to-run setup.sql with the user's
+   chosen embedding dimension already substituted in. The raw SQL
+   comes from one of two sources:
+     1. Inlined at build time (build.js replaces __SETUP_SQL__).
+     2. Fetched at runtime from the latest GitHub release tag,
+        used when the inlined copy is absent (unbuilt dev page).
+   Substitution is a global replace of vector(1024); that literal
+   appears only in the two embedding spots in setup.sql. */
+var REPO = 'OurThinkTank/founders-os';
+// Used when the GitHub latest-release lookup fails. main only advances via
+// reviewed release PRs, so it always reflects the newest released schema -
+// no per-release bump needed. If a user grabs a setup.sql slightly ahead of
+// the published server, get_version's schema-version check reports it.
+var FALLBACK_REF = 'main';
+var _rawSqlCache = null;
+var _dbSqlText = '';
+
+function getInlinedSetupSql() {
+  var el = document.getElementById('setupSqlInlined');
+  if (!el) return null;
+  var t = el.textContent || '';
+  if (t.indexOf('__SETUP_SQL__') !== -1 || t.trim() === '') return null;
+  return t;
+}
+
+function resolveTag() {
+  return fetch('https://api.github.com/repos/' + REPO + '/releases/latest')
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(j) { return (j && j.tag_name) ? j.tag_name : FALLBACK_REF; })
+    .catch(function() { return FALLBACK_REF; });
+}
+
+function getRawSetupSql() {
+  if (_rawSqlCache) return Promise.resolve(_rawSqlCache);
+  var inlined = getInlinedSetupSql();
+  if (inlined) { _rawSqlCache = inlined; return Promise.resolve(inlined); }
+  return resolveTag().then(function(tag) {
+    return fetch('https://raw.githubusercontent.com/' + REPO + '/' + tag + '/supabase/setup.sql')
+      .then(function(r) { if (!r.ok) throw new Error('fetch failed'); return r.text(); })
+      .then(function(text) { _rawSqlCache = text; return text; });
+  });
+}
+
+function getDimension() {
+  var provider = getProvider();
+  var ids = { openai: 'openaiDim', bedrock: 'bedrockDim', ollama: 'ollamaDim' };
+  var defaults = { openai: 1536, bedrock: 1024, ollama: 768 };
+  var el = document.getElementById(ids[provider]);
+  var v = el ? parseInt(el.value, 10) : NaN;
+  return (v && v > 0) ? v : defaults[provider];
+}
+
+function sqlForDimension(raw, dim) {
+  return raw.replace(/vector\(1024\)/g, 'vector(' + dim + ')');
+}
+
+function renderDbSql() {
+  var dim = getDimension();
+  var codeEl = document.getElementById('dbSqlCode');
+  var noteEl = document.getElementById('dbDimNote');
+  codeEl.textContent = 'Loading database setup...';
+  return getRawSetupSql().then(function(raw) {
+    _dbSqlText = sqlForDimension(raw, dim);
+    codeEl.textContent = _dbSqlText;
+    if (noteEl) noteEl.textContent = 'The size number in this setup code (vector(' + dim + ')) is matched to the embedding provider you chose. Please do not change it, or memory search will not work.';
+  }).catch(function() {
+    _dbSqlText = '';
+    codeEl.textContent =
+      'Could not load the database setup file automatically.\n\n' +
+      'Open this file in your browser:\n' +
+      '  https://github.com/' + REPO + '/blob/' + FALLBACK_REF + '/supabase/setup.sql\n\n' +
+      // The file already uses vector(1024); only ask for a find-and-replace
+      // when the chosen dimension differs from that sentinel.
+      (dim === 1024
+        ? 'Run it in your Supabase SQL Editor.'
+        : 'Then find and replace every "vector(1024)" with "vector(' + dim + ')",\n' +
+          'and run it in your Supabase SQL Editor.');
+    if (noteEl) noteEl.textContent = 'Automatic loading failed - follow the manual steps shown above. The size number must be ' + dim + '.';
+  });
+}
+
+function downloadSetupSql() {
+  if (!_dbSqlText) return;
+  var blob = new Blob([_dbSqlText], { type: 'text/plain' });
+  triggerDownload(blob, 'setup.sql');
+  flashToast('toast-db-download');
+}
+
+/* ── Generate Output ── */
+function generateOutput() {
+  document.getElementById('ccConfigCode').textContent = JSON.stringify(buildMcpConfig(), null, 2);
+  var panel = document.getElementById('outputPanel');
+  panel.classList.add('visible');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  renderDbSql();
+}
+
+/* Warm the SQL cache early so it is ready by the time the user generates. */
+getRawSetupSql().catch(function() {});
+
+/* ── Plain-language explainer toggle ── */
+(function() {
+  var ex = document.getElementById('explainer');
+  var btn = document.getElementById('explainerToggle');
+  if (!ex || !btn) return;
+  btn.addEventListener('click', function() {
+    var open = ex.classList.toggle('open');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+})();
+
+/* ── Downloads ── */
+function downloadConfig() {
+  var mcpJson = JSON.stringify(buildMcpConfig(), null, 2);
+  var blob = new Blob([mcpJson], { type: 'application/json' });
+  triggerDownload(blob, 'mcp.json');
+  flashToast('toast-download');
+}
+
+function triggerDownload(blob, filename) {
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+/* ── Copy ── */
+function copyToClipboard(elementId, toastId) {
+  var text = document.getElementById(elementId).textContent;
+  navigator.clipboard.writeText(text).then(function() { flashToast(toastId); });
+}
+
+function flashToast(id) {
+  var el = document.getElementById(id);
+  el.classList.add('show');
+  setTimeout(function() { el.classList.remove('show'); }, 2000);
+}
+
+/* ── Clear All ── */
+function clearAll() {
+  if (!confirm('Clear all fields and generated output?')) return;
+  var inputs = document.querySelectorAll('input[type="text"],input[type="password"],input[type="number"]');
+  for (var i = 0; i < inputs.length; i++) inputs[i].value = '';
+  document.getElementById('companyId').value = 'default';
+  document.getElementById('openaiModel').value = 'text-embedding-3-small';
+  document.getElementById('openaiDim').value = '1536';
+  document.getElementById('bedrockModel').value = 'amazon.nova-2-multimodal-embeddings-v1:0';
+  document.getElementById('bedrockDim').value = '1024';
+  document.getElementById('ollamaUrl').value = 'http://localhost:11434';
+  document.getElementById('ollamaModel').value = 'nomic-embed-text';
+  document.getElementById('ollamaDim').value = '768';
+  document.getElementById('useLatest').checked = true;
+  document.getElementById('outputPanel').classList.remove('visible');
+  goToStep(1);
+}
+
+/* ── Page unload: clear sensitive fields ── */
+window.addEventListener('beforeunload', function() {
+  var pw = document.querySelectorAll('input[type="password"]');
+  for (var i = 0; i < pw.length; i++) pw[i].value = '';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+{
+  "name": "@ourthinktank/founders-os-core",
+  "version": "0.14.0",
+  "description": "Transport-agnostic core for Founders OS — CRM, tasks, finances, feeds, memory, and visual surface tools, exposed as raw ToolMaps for any MCP transport.",
+  "author": "OurThinkTank",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.800.0",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@supabase/supabase-js": "^2.49.4",
+    "openai": "^4.100.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@vitest/coverage-v8": "^4.1.4",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ourthinktank/founders-os.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://foundersmcp.com",
+  "bugs": {
+    "url": "https://github.com/OurThinkTank/founders-os/issues"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "crm",
+    "founders",
+    "startup",
+    "small-business",
+    "claude",
+    "ai-tools",
+    "supabase"
+  ]
+}

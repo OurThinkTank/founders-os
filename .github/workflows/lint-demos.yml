@@ -1,0 +1,45 @@
+# .github/workflows/lint-demos.yml
+#
+# Lints the interactive demo walkthroughs against the real tool
+# schemas. Fails if a demo's Tool/Params block uses a parameter
+# that does not exist on that tool (e.g. `tags` vs `tag`,
+# `assignee` vs `assigned_to`, `confirm` on a tool with no such
+# field). Keeps demo scripts from drifting away from the server's
+# actual tool definitions.
+
+name: Lint Demos
+
+on:
+  pull_request:
+    paths:
+      - 'packages/mcp-server/demos/**'
+      - 'packages/core/src/tools/**'
+      - 'packages/mcp-server/src/__tests__/demo-tool-params.test.ts'
+  push:
+    paths:
+      - 'packages/mcp-server/demos/**'
+      - 'packages/core/src/tools/**'
+      - 'packages/mcp-server/src/__tests__/demo-tool-params.test.ts'
+
+jobs:
+  lint-demos:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # demo-tool-params.test.ts imports the @ourthinktank/founders-os-core
+      # package (its dist), so core must be built before the lint runs.
+      - name: Build core
+        run: npm -w packages/core run build
+
+      - name: Lint demo tool-call parameters
+        run: npm -w packages/mcp-server run test:demos
