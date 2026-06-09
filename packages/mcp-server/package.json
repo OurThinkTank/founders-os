@@ -43,7 +43,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ourthinktank/founders-os.git",
+    "url": "https://github.com/OurThinkTank/founders-os.git",
     "directory": "packages/mcp-server"
   },
   "homepage": "https://foundersmcp.com",
