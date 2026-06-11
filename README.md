@@ -8,6 +8,10 @@ Built by [OurThinkTank](https://ourthinktank.com). Marketing site at [foundersmc
 
 New to AI tools, or handing this to someone who is? Start with [Read This First](https://foundersmcp.com/docs/read-this-first/) - a plain-language intro to what FoundersOS is and isn't, what AI assistants can and can't do, and the habits that keep them honest.
 
+<p align="center">
+  <img src=".github/assets/start-my-day.gif" alt="Founders OS in action: typing 'start my day' produces a full morning briefing - tasks due today, work assigned to AI, and feed headlines." width="760">
+</p>
+
 ## What's Included
 
 | Module | Tools | Description |
