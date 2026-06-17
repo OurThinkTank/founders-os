@@ -126,6 +126,13 @@ export const memoryTools: ToolMap = {
         .string()
         .optional()
         .describe("Optional label for the originating tool or surface."),
+      kind: z
+        .string()
+        .optional()
+        .describe(
+          "Optional classifier stored in metadata.kind (e.g. 'checkpoint', 'decision', 'fact'). " +
+          "Used by get_project_history to build a typed timeline."
+        ),
       resolution: z
         .enum(["confirm", "cancel"])
         .optional()
@@ -135,11 +142,12 @@ export const memoryTools: ToolMap = {
         .optional()
         .describe("Deprecated: use `resolution: \"confirm\"`. Set true to skip near-duplicate detection."),
     }),
-    handler: async (ctx: ToolContext, { content, scope, project, source_tool, force, resolution }: {
+    handler: async (ctx: ToolContext, { content, scope, project, source_tool, kind, force, resolution }: {
       content: string;
       scope: "org" | "personal";
       project?: string;
       source_tool?: string;
+      kind?: string;
       force?: boolean;
       resolution?: "confirm" | "cancel";
     }) => {
@@ -170,6 +178,7 @@ export const memoryTools: ToolMap = {
           content,
           embedding: JSON.stringify(embedding),
           source_tool: source_tool ?? null,
+          ...(kind ? { metadata: { kind } } : {}),
         })
         .select("id, user_id, scope, project, content, created_at")
         .single();
@@ -548,6 +557,13 @@ export const memoryTools: ToolMap = {
         .enum(["org", "personal"])
         .describe("'org' to share with the whole team, 'personal' for private notes."),
       project: z.string().optional().describe("Optional project tag."),
+      kind: z
+        .string()
+        .optional()
+        .describe(
+          "Optional classifier stored in metadata.kind. Pass 'checkpoint' for end-of-session " +
+          "checkpoints so get_project_history can build the project timeline."
+        ),
       resolution: z
         .enum(["confirm", "cancel"])
         .optional()
@@ -557,10 +573,11 @@ export const memoryTools: ToolMap = {
         .optional()
         .describe("Deprecated: use `resolution: \"confirm\"`. Set true to skip near-duplicate detection."),
     }),
-    handler: async (ctx: ToolContext, { session_summary, scope, project, force, resolution }: {
+    handler: async (ctx: ToolContext, { session_summary, scope, project, kind, force, resolution }: {
       session_summary: string;
       scope: "org" | "personal";
       project?: string;
+      kind?: string;
       force?: boolean;
       resolution?: "confirm" | "cancel";
     }) => {
@@ -591,6 +608,7 @@ export const memoryTools: ToolMap = {
           content: session_summary,
           embedding: JSON.stringify(embedding),
           source_tool: "memory_summarize_and_store",
+          ...(kind ? { metadata: { kind } } : {}),
         })
         .select("id, user_id, scope, project, content, created_at")
         .single();

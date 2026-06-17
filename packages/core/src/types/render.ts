@@ -50,7 +50,7 @@ export type FormatHint =
   | "metric_cards"      // headline numbers + breakdowns (get_dashboard, get_financial_summary)
   | "status_groups"     // grouped items with header chips (get_task_summary, get_stuck_list, get_weekly_retro default)
   | "kanban"            // columns by status (list_tasks)
-  | "timeline"          // reserved for upcoming work, no current tool
+  | "timeline"          // chronological entries newest-first (get_project_history)
   | "table"             // tabular data (list_transactions, list_customers, get_pl_report)
   | "headline_list"     // ranked headlines (get_feed_briefing)
   | "narrative"         // prose draft (get_weekly_retro with format: "linkedin")

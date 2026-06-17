@@ -392,12 +392,14 @@ list_playbook_runs(customer_id) → get_playbook_run(run_id) for full log
 
 ## Surfaces
 
-Four cross-domain read views:
+Cross-domain read views and session bookends:
 
 - **get_session_start** — session orientation pointer. Returns today's date and a list of tools to call in parallel for a complete briefing. Does not fetch data itself - call the listed tools for the actual content.
 - **get_entity_card(entity_type, entity_id)** — complete picture of any entity: record + open tasks + recent interactions + linked transactions
 - **get_weekly_retro(week_offset)** — completed tasks grouped by first tag with completion notes. Set format='linkedin' for a ready-to-post draft.
 - **get_stuck_list(max_age_days)** — stuck, stale, blocked, and overdue tasks sorted by worst offenders. Each row includes days_stale and a suggested triage action.
+- **checkpoint(project)** — end-of-session bookend to get_session_start. Call when the user says "checkpoint" or "wrap up this session". Returns the ordered procedure (summarize, capture repo changes as commit links, store the record, propose task candidates, write the handoff doc), the exact memory_summarize_and_store call to make (kind="checkpoint", resolution="confirm"), and the previous checkpoint for continuity. The agent performs the steps; the tool writes nothing itself.
+- **get_project_history(project, kind)** — chronological timeline of a project's stored memories, newest-first. Defaults to kind='checkpoint'; pass kind='all' for every memory. The chronological companion to the semantic memory_recall.
 - **show_capabilities** — example prompts and workflows organized by domain. Call this (or suggest it) when a user asks "what can you do?" or wants to explore features.
 
 ---
