@@ -33,7 +33,17 @@ import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
+import { conflict } from "../conflict.js";
 import type { ToolContext } from "../../types/context.js";
+import {
+  buildExportDocument,
+  parseImportDocument,
+  assessPlaybook,
+  contentHash,
+  deriveConfirmToken,
+  buildPreviewRender,
+  type ExportableStep,
+} from "./share.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
 //   - writeAuditLog(ctx, ...) (audit.ts refactor 2026-05-28)
@@ -1180,6 +1190,302 @@ export const playbookTools: ToolMap = {
           return data;
         },
       });
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // export_playbook
+  // ──────────────────────────────────────────────────────────
+  export_playbook: {
+    title: "Export Playbook",
+    description:
+      "Export a playbook (and its steps) to a portable, human-readable JSON document that can be " +
+      "saved, shared, or submitted to the Playbook Exchange. The export strips all tenant-specific " +
+      "data (ids, company_id, run history) and keeps {{placeholders}} as literal tokens, so it never " +
+      "leaks your customers or data. Returns the document plus a risk summary and any warnings (e.g. a " +
+      "step that references private data or looks like it contains a secret). Read-only.",
+    parameters: z.object({
+      playbook_id: z.string().describe("Playbook UUID or slug to export."),
+    }),
+    handler: async (ctx: ToolContext, { playbook_id }: { playbook_id: string }) => {
+      const supabase = ctx.db;
+      const playbook = await resolvePlaybook(supabase, playbook_id, ctx.companyId);
+      const steps = await loadSteps(supabase, playbook.id);
+
+      const exportableSteps: ExportableStep[] = steps.map((s) => ({
+        order_index: s.order_index,
+        type: s.type,
+        title: s.title,
+        description: s.description,
+        assignee: s.assignee,
+        due_offset: s.due_offset,
+        priority: s.priority,
+        connector: s.connector,
+        action: s.action,
+        params: s.params,
+        fallback_task: s.fallback_task,
+      }));
+
+      const document = buildExportDocument(
+        { name: playbook.name, slug: playbook.slug, description: playbook.description },
+        exportableSteps
+      );
+      const assessment = assessPlaybook(document.playbook);
+
+      // Surface anything that makes the export unsafe to share publicly.
+      const warnings: string[] = [];
+      for (const s of assessment.steps) {
+        if (s.secrets_found.length > 0) {
+          warnings.push(
+            `Step ${s.order_index} ("${s.title}") looks like it contains a hard-coded secret (${s.secrets_found.join(", ")}). Remove it before sharing.`
+          );
+        }
+        if (s.sensitive_placeholders.length > 0 && s.type === "external_action") {
+          warnings.push(
+            `Step ${s.order_index} ("${s.title}") sends private data (${s.sensitive_placeholders.join(", ")}) to an external tool. Anyone who imports this should be told.`
+          );
+        }
+      }
+
+      return {
+        document,
+        document_json: JSON.stringify(document, null, 2),
+        content_hash: document.provenance.content_hash,
+        risk: { max_severity: assessment.max_severity, labels: assessment.labels },
+        warnings,
+        note:
+          "This file is shareable. It contains no customer data, only placeholders. " +
+          "Review the warnings above before publishing it anywhere public.",
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // preview_playbook_import
+  // ──────────────────────────────────────────────────────────
+  preview_playbook_import: {
+    title: "Preview Playbook Import",
+    description:
+      "STEP 1 of importing a shared playbook. Parses a playbook JSON document and explains, in plain " +
+      "language, exactly what it will do BEFORE anything is written. Recomputes risk locally (never " +
+      "trusts the file's own risk label) and flags destructive or data-exfiltrating steps so they can " +
+      "be shown in bold red. Returns a confirm_token; pass it to import_playbook only after the user " +
+      "has read this preview and explicitly agreed. This tool is READ-ONLY and writes nothing. " +
+      "Always run this before import_playbook.",
+    parameters: z.object({
+      document: z
+        .union([z.string(), z.record(z.unknown())])
+        .describe("The playbook JSON document, as a string or an object."),
+    }),
+    handler: async (ctx: ToolContext, { document }: { document: string | Record<string, unknown> }) => {
+      void ctx; // read-only: parsing + classification only, no tenant access
+      const { playbook, declared_format_version } = parseImportDocument(document);
+      const assessment = assessPlaybook(playbook);
+      const hash = contentHash(playbook);
+      const importable = assessment.blocking_issues.length === 0;
+
+      return {
+        importable,
+        summary: assessment.summary,
+        playbook: { name: playbook.name, slug: playbook.slug, description: playbook.description },
+        step_count: playbook.steps.length,
+        max_severity: assessment.max_severity,
+        risk_labels: assessment.labels,
+        connectors_required: assessment.connectors,
+        steps: assessment.steps,
+        destructive_or_exfiltration_steps: assessment.red_flag_steps,
+        blocking_issues: assessment.blocking_issues,
+        declared_format_version,
+        content_hash: hash,
+        // Only hand back a token when the playbook is safe enough to
+        // import at all. Blocking issues (private URLs, embedded
+        // secrets) mean there is nothing to confirm.
+        confirm_token: importable ? deriveConfirmToken(hash) : null,
+        next_step: importable
+          ? "Show the user this preview (destructive/exfiltration steps in bold red). If they confirm, call import_playbook with the same document and this confirm_token."
+          : "Do NOT import. Resolve the blocking_issues first; no confirm_token was issued.",
+        render: buildPreviewRender(assessment),
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // import_playbook
+  // ──────────────────────────────────────────────────────────
+  import_playbook: {
+    title: "Import Playbook",
+    description:
+      "STEP 2 of importing a shared playbook. Installs the playbook into YOUR company after the user " +
+      "has reviewed preview_playbook_import and confirmed. Requires the confirm_token returned by that " +
+      "preview (a guard against importing something the user has not seen). Inserts the playbook and " +
+      "steps under your own company; ignores any ids or company_id in the file. This INSTALLS the " +
+      "template only and never executes any step. Refuses to import if the playbook has blocking " +
+      "issues (private URLs, embedded secrets). Run preview_playbook_import first.",
+    parameters: z.object({
+      document: z
+        .union([z.string(), z.record(z.unknown())])
+        .describe("The same playbook JSON document that was previewed."),
+      confirm_token: z
+        .string()
+        .describe("The confirm_token returned by preview_playbook_import for this exact document."),
+      slug: z
+        .string()
+        .optional()
+        .describe("Optional slug override. Used to resolve a slug collision after the conflict prompt."),
+      resolution: z
+        .enum(["cancel"])
+        .optional()
+        .describe("Set to 'cancel' to abort the import after a conflict prompt."),
+    }),
+    handler: async (
+      ctx: ToolContext,
+      { document, confirm_token, slug, resolution }: {
+        document: string | Record<string, unknown>;
+        confirm_token: string;
+        slug?: string;
+        resolution?: "cancel";
+      }
+    ) => {
+      if (resolution === "cancel") {
+        return { success: false, cancelled: true, message: "Import cancelled. Nothing was changed." };
+      }
+
+      const supabase = ctx.db;
+      const { playbook } = parseImportDocument(document);
+      const assessment = assessPlaybook(playbook);
+
+      // Hard safety floor: never import a playbook that can reach
+      // private infrastructure or that carries a hard-coded secret.
+      if (assessment.blocking_issues.length > 0) {
+        throw new Error(
+          "Refusing to import. Resolve these issues first: " +
+            assessment.blocking_issues.map((b) => b.message).join(" ")
+        );
+      }
+
+      // Two-call handshake: the token proves preview ran on these bytes.
+      const expected = deriveConfirmToken(contentHash(playbook));
+      if (confirm_token !== expected) {
+        throw new Error(
+          "Invalid or stale confirm_token. Run preview_playbook_import on this exact document, " +
+            "show the user the result, and pass the confirm_token it returns."
+        );
+      }
+
+      // Sanitize the slug from the file before it touches the DB. The
+      // imported slug is attacker-controlled and was only length-checked,
+      // so normalize it through the same toSlug() the rest of the system
+      // uses. This keeps slugs URL-safe, prevents a slug from masquerading
+      // as a UUID in resolvePlaybook, and stops LIKE wildcards (% / _) in a
+      // crafted slug from corrupting the collision scan below. The hashed
+      // document is left untouched, so the confirm_token stays valid.
+      const baseSlug = (slug ? toSlug(slug) : toSlug(playbook.slug)) || "imported-playbook";
+
+      // Slug is unique per company (schema enforces unique(company_id, slug)).
+      // Match the house "Validate, Don't Assume" protocol: never silently
+      // rename. If the slug is taken, return a conflict and let the user
+      // choose. Never reuse an id from the file; this is always a fresh
+      // playbook in the importer's tenant.
+      const { data: existing, error: slugErr } = await supabase
+        .from("playbooks")
+        .select("name, slug")
+        .eq("company_id", ctx.companyId)
+        .is("deleted_at", null)
+        .like("slug", `${baseSlug}%`);
+      if (slugErr) throw new Error(`Failed to check slug availability: ${slugErr.message}`);
+      const taken = new Set((existing ?? []).map((r) => (r as { slug: string }).slug));
+
+      if (taken.has(baseSlug)) {
+        if (slug) {
+          // User picked this slug explicitly and it is still taken.
+          const owner = (existing ?? []).find(
+            (r) => (r as { slug: string }).slug === baseSlug
+          ) as { name: string } | undefined;
+          throw new Error(
+            `Slug "${baseSlug}" is already used by playbook "${owner?.name ?? "?"}". Choose a different slug.`
+          );
+        }
+        // Suggest the first free "<slug>-N" and let the user decide.
+        let suggested = baseSlug;
+        let n = 2;
+        while (taken.has(suggested)) suggested = `${baseSlug}-${n++}`;
+        return conflict(
+          "silent_default",
+          `A playbook with slug "${baseSlug}" already exists in your company. Import "${playbook.name}" under a different slug?`,
+          [
+            {
+              key: "import_renamed",
+              label: `Import as "${suggested}"`,
+              value: { document, confirm_token, slug: suggested },
+            },
+            { key: "cancel", label: "Cancel import", value: { resolution: "cancel" } },
+          ],
+          { existing_slug: baseSlug, suggested_slug: suggested }
+        );
+      }
+      const finalSlug = baseSlug;
+
+      const { data: created, error: pbErr } = await supabase
+        .from("playbooks")
+        .insert({
+          company_id: ctx.companyId,
+          name: playbook.name,
+          slug: finalSlug,
+          description: playbook.description ?? null,
+        })
+        .select()
+        .single();
+      if (pbErr || !created) throw new Error(`Failed to create playbook: ${pbErr?.message}`);
+      const newPlaybook = created as PlaybookRow;
+
+      if (playbook.steps.length > 0) {
+        const rows = playbook.steps.map((s) => ({
+          playbook_id: newPlaybook.id,
+          order_index: s.order_index,
+          type: s.type,
+          title: s.title,
+          description: s.description ?? null,
+          assignee: s.assigned_to ?? null,
+          due_offset: s.due_offset ?? null,
+          priority: s.priority ?? "medium",
+          connector: s.connector ?? null,
+          action: s.action ?? null,
+          params: s.params ?? null,
+          fallback_task: s.fallback_task ?? null,
+        }));
+        const { error: stepErr } = await supabase.from("playbook_steps").insert(rows);
+        if (stepErr) {
+          // Roll back the playbook row so a failed import leaves nothing behind.
+          await supabase.from("playbooks").delete().eq("id", newPlaybook.id).eq("company_id", ctx.companyId);
+          throw new Error(`Failed to import steps: ${stepErr.message}`);
+        }
+      }
+
+      await writeAuditLog(ctx, {
+        action: "import_playbook",
+        entity_type: "playbook",
+        entity_id: newPlaybook.id,
+        after_state: {
+          name: newPlaybook.name,
+          slug: newPlaybook.slug,
+          step_count: playbook.steps.length,
+          max_severity: assessment.max_severity,
+          content_hash: contentHash(playbook),
+        },
+        metadata: { risk_labels: assessment.labels },
+      });
+
+      return {
+        success: true,
+        playbook: newPlaybook,
+        imported_step_count: playbook.steps.length,
+        slug: finalSlug,
+        slug_changed: finalSlug !== playbook.slug,
+        max_severity: assessment.max_severity,
+        note:
+          "Installed only. No steps were executed. Review the steps, then use run_playbook " +
+          "(with preflight_only: true first) when you are ready to run it.",
+      };
     },
   },
 };

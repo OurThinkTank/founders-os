@@ -108,6 +108,7 @@ const HELPER_FILES = [
   "tools/financial/access.ts",
   "tools/memory/embed.ts",
   "tools/permissions.ts",
+  "tools/playbooks/share.ts",
   "tools/remove.ts",
 ] as const;
 

@@ -96,6 +96,7 @@ export const AUDIT_DOMAINS: Record<string, string[]> = {
   memory: ["memory_store", "memory_forget", "memory_update"],
   playbooks: [
     "run_playbook",
+    "import_playbook",
     "delete_playbook",
     "archive_playbook",
     "restore_playbook",
