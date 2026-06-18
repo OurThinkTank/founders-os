@@ -42,9 +42,8 @@ jobs:
       # uses "*" for the core dependency; before publishing mcp-server we pin it
       # to the exact published version so consumers resolve a concrete release.
       #
-      # Do NOT add --provenance while the repo is private; npm provenance
-      # requires a public source repo and will fail. Add it at launch when
-      # the repo flips public (and add `id-token: write` to permissions then).
+      # --provenance is enabled below: the repo is public, so npm can attest the
+      # build from this workflow (the job already declares `id-token: write`).
       - name: Publish core
         run: npm publish -w packages/core --provenance
         env:
