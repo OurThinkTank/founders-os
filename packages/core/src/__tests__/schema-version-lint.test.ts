@@ -52,7 +52,7 @@ describe("schema version lockstep", () => {
       .filter((f) => /^\d{3}_.*\.sql$/.test(f))
       .sort();
     if (sqlFiles.length === 0) {
-      // Empty at launch: setup.sql alone defines the version. Covered above.
+      // No migrations yet: setup.sql alone defines the version. Covered above.
       return;
     }
     const newest = sqlFiles[sqlFiles.length - 1];

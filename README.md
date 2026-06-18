@@ -355,7 +355,7 @@ founders-os/
 │   └── setup-page/                  # Config wizard hosted at foundersmcp.com/setup
 ├── supabase/
 │   ├── setup.sql                    # Complete schema for fresh installs (run once)
-│   └── migrations/                  # Future schema changes (empty at launch)
+│   └── migrations/                  # Future schema changes (currently empty)
 ├── docs/                            # Specs and design docs
 └── README.md
 ```
