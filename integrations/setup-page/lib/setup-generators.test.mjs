@@ -38,6 +38,23 @@ test("buildEnvFile emits KEY=value lines for the creds, skips empties", () => {
   assert.doesNotMatch(out, /FOUNDERS_OS_USER_ID=/); // not provided -> omitted
 });
 
+test("tickCommand defaults to the npx form (-p, second bin), honors useLatest + override", () => {
+  assert.equal(gen.tickCommand({}), "npx -y -p @ourthinktank/founders-os founders-os-tick");
+  assert.equal(gen.tickCommand({ useLatest: true }), "npx -y -p @ourthinktank/founders-os@latest founders-os-tick");
+  assert.equal(gen.tickCommand({ tickBin: "founders-os-tick" }), "founders-os-tick");
+});
+
+test("scheduler env file carries FOUNDERSOS_TICK_BIN, QUOTED (it has spaces; the file is sourced)", () => {
+  const b = gen.buildSchedulerBundle(ENV, { useLatest: true });
+  // Must be double-quoted - an unquoted multi-word value runs as a command when sourced.
+  assert.match(b.envFile, /^FOUNDERSOS_TICK_BIN="npx -y -p @ourthinktank\/founders-os@latest founders-os-tick"$/m);
+  // A single-word override needs no quotes.
+  const b2 = gen.buildSchedulerBundle(ENV, { tickBin: "founders-os-tick" });
+  assert.match(b2.envFile, /^FOUNDERSOS_TICK_BIN=founders-os-tick$/m);
+  // Single-word creds stay unquoted.
+  assert.match(b.envFile, /^SUPABASE_URL=https:\/\/abc\.supabase\.co$/m);
+});
+
 test("launchd plist points at the wrapper, not the bare CLI, and carries no secrets", () => {
   const plist = gen.buildLaunchdPlist({ wrapperPathUnix: "/Users/me/.local/bin/foundersos-tick.sh" });
   assert.match(plist, /<string>\/Users\/me\/\.local\/bin\/foundersos-tick\.sh<\/string>/);
@@ -59,6 +76,15 @@ test("cron + Task Scheduler point at the wrapper with the right cadence", () => 
   const win = gen.buildTaskSchedulerCmd({ wrapperPathWin: "C:\\\\tools\\\\foundersos-tick.cmd" });
   assert.match(win, /schtasks \/Create .* \/TR "C:\\\\tools\\\\foundersos-tick\.cmd" \/SC HOURLY/);
   assert.match(gen.buildTaskSchedulerCmd({ cadence: "daily", dailyHour: 6 }), /\/SC DAILY \/ST 06:00/);
+});
+
+test("launchd/systemd units never ship a tilde path (launchd/systemd don't expand ~)", () => {
+  // Default fallback must be a loud absolute placeholder, not a ~ path.
+  assert.doesNotMatch(gen.buildLaunchdPlist({}), /~\//);
+  assert.doesNotMatch(gen.buildSystemdService({}), /~\//);
+  assert.match(gen.buildLaunchdPlist({}), /<string>\/[A-Z/]/); // starts with /
+  // An explicit absolute path flows through unchanged.
+  assert.match(gen.buildSystemdService({ wrapperPathUnix: "/Users/me/.local/bin/foundersos-tick.sh" }), /ExecStart=\/Users\/me\//);
 });
 
 test("buildSchedulerBundle returns all six artifacts", () => {

@@ -628,8 +628,8 @@ select{cursor:pointer;appearance:none;
         <div class="install-steps-title">What this is</div>
         <ol>
           <li>The tick is a small scheduled job that checks your watches on a cadence and stages anything that fires for your review. It performs nothing on its own - staged items wait for you.</li>
-          <li>Download the <strong>tick wrapper</strong> for your OS from <a href="https://github.com/OurThinkTank/founders-os/tree/main/integrations/scheduler">integrations/scheduler</a> and save it (e.g. <code>~/.local/bin/foundersos-tick.sh</code>, or the <code>.cmd</code> on Windows). The wrapper runs <code>detect</code> then <code>run --hold-only</code>.</li>
-          <li>Save the env file below to <code>~/.config/foundersos-tick.env</code> (the wrapper reads your credentials from there - scheduled jobs don't see your shell profile).</li>
+          <li>Download the <strong>tick wrapper</strong> for your OS from <a href="https://github.com/OurThinkTank/founders-os/tree/main/integrations/scheduler">integrations/scheduler</a>, save it to a real <strong>absolute</strong> path (e.g. <code>/Users/you/.local/bin/foundersos-tick.sh</code>), and make it executable (<code>chmod +x</code>). Enter that same absolute path in the box below. The wrapper runs <code>detect</code> then <code>run --hold-only</code>.</li>
+          <li>Save the env file below to <code>~/.config/founders-os/foundersos-tick.env</code> (create the folder first: <code>mkdir -p ~/.config/founders-os</code>). The wrapper reads your credentials from there - scheduled jobs don't see your shell profile.</li>
           <li>Install the scheduler unit below for your OS, then register it with the one-time command shown.</li>
         </ol>
       </div>
@@ -647,8 +647,15 @@ select{cursor:pointer;appearance:none;
           <option value="daily">Daily (6am)</option>
         </select>
       </div>
+      <div class="output-actions" style="align-items:center;gap:8px;flex-wrap:wrap">
+        <label for="schedWrapperPath"><strong>Absolute path where you saved the wrapper:</strong></label>
+        <input id="schedWrapperPath" type="text" oninput="renderScheduler()"
+               placeholder="/Users/you/.local/bin/foundersos-tick.sh"
+               style="min-width:340px;padding:6px 8px;font-family:monospace" />
+      </div>
+      <div class="notice notice-info" style="margin-top:8px">Use a full absolute path (starting with <code>/</code>), not <code>~</code> - launchd and systemd do not expand <code>~</code> and will silently fail to start (exit 78) if you use it.</div>
 
-      <p class="install-note" style="margin-top:16px"><strong>1. Credentials file</strong> - save as <code>~/.config/foundersos-tick.env</code> (then <code>chmod 600</code> it):</p>
+      <p class="install-note" style="margin-top:16px"><strong>1. Credentials file</strong> - save as <code>~/.config/founders-os/foundersos-tick.env</code> (<code>mkdir -p ~/.config/founders-os</code> first, then <code>chmod 600</code> the file):</p>
       <div class="output-actions">
         <button class="btn btn-primary" onclick="copyToClipboard('schedEnvCode','toast-sched-env-copy')">Copy</button>
         <button class="btn btn-secondary" onclick="downloadSchedEnv()">Download .env</button>
@@ -1161,9 +1168,16 @@ var _schedBundle = null;
 
 function renderScheduler() {
   if (typeof FoundersOSSetup === 'undefined') return;
+  var wrapperPath = document.getElementById('schedWrapperPath').value.trim();
   _schedBundle = FoundersOSSetup.buildSchedulerBundle(buildEnv(), {
     cadence: document.getElementById('schedCadence').value,
     dailyHour: 6,
+    // Empty -> the module's loud placeholder, so the user must fill it in
+    // rather than ship a tilde path that launchd/systemd cannot expand.
+    wrapperPathUnix: wrapperPath || undefined,
+    // Match the mcp.json package pin so the env file's FOUNDERSOS_TICK_BIN
+    // (the npx invocation) targets the same version.
+    useLatest: document.getElementById('useLatest').checked,
   });
   document.getElementById('schedEnvCode').textContent = _schedBundle.envFile;
 
