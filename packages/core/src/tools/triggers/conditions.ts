@@ -29,10 +29,32 @@ export interface EvalResult {
   brief: string;
 }
 
+/**
+ * The owning scope of the trigger being evaluated. A 'personal' watch with
+ * an ownerId restricts evaluation to that owner's records FOR CONDITIONS
+ * THAT HAVE A PER-USER OWNER (today: the task conditions, filtered by
+ * assigned_to OR created_by). Conditions whose underlying data has no
+ * per-user owner (stalled_deal on customers, overspend / budget_threshold
+ * on the company books) ignore this and evaluate company-wide; for those,
+ * scope is a presentation label, not an isolation boundary (see M3 in the
+ * 2026-06-29 proactive-agents review). 'org' scope always evaluates
+ * company-wide.
+ */
+export interface EvalScope {
+  scope: "org" | "personal";
+  ownerId: string | null;
+}
+
 export type DataEvaluator = (
   ctx: ToolContext,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  scope?: EvalScope
 ) => Promise<EvalResult>;
+
+/** True when a personal watch should restrict to a specific owner's rows. */
+function isOwnerScoped(scope?: EvalScope): scope is EvalScope & { ownerId: string } {
+  return scope?.scope === "personal" && typeof scope.ownerId === "string" && scope.ownerId.length > 0;
+}
 
 // ── Shared helpers ─────────────────────────────────────────
 
@@ -116,17 +138,20 @@ const stalled_deal: DataEvaluator = async (ctx, params) => {
 
 // ── stuck_task: in_progress task with no movement ──────────
 
-const stuck_task: DataEvaluator = async (ctx, params) => {
+const stuck_task: DataEvaluator = async (ctx, params, scope) => {
   const days = asInt(params.days, 7);
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
 
-  const { data, error } = await ctx.db
+  let q = ctx.db
     .from("tasks")
     .select("id, title, updated_at")
     .eq("company_id", ctx.companyId)
     .eq("status", "in_progress")
     .lt("updated_at", cutoff)
     .is("deleted_at", null);
+  // A personal watch sees only the owner's tasks (assigned to OR created by).
+  if (isOwnerScoped(scope)) q = q.or(`assigned_to.eq.${scope.ownerId},created_by.eq.${scope.ownerId}`);
+  const { data, error } = await q;
   if (error) throw new Error(`stuck_task evaluation failed: ${error.message}`);
 
   const rows = (data ?? []) as Array<{ id: string; updated_at: string }>;
@@ -141,11 +166,11 @@ const stuck_task: DataEvaluator = async (ctx, params) => {
 
 // ── overdue_task: todo/in_progress past its due date ───────
 
-const overdue_task: DataEvaluator = async (ctx, params) => {
+const overdue_task: DataEvaluator = async (ctx, params, scope) => {
   const graceDays = asInt(params.days, 0);
   const cutoffDate = new Date(Date.now() - graceDays * 86_400_000).toISOString().slice(0, 10);
 
-  const { data, error } = await ctx.db
+  let q = ctx.db
     .from("tasks")
     .select("id, title, due_date")
     .eq("company_id", ctx.companyId)
@@ -153,6 +178,9 @@ const overdue_task: DataEvaluator = async (ctx, params) => {
     .lt("due_date", cutoffDate)
     .not("due_date", "is", null)
     .is("deleted_at", null);
+  // A personal watch sees only the owner's tasks (assigned to OR created by).
+  if (isOwnerScoped(scope)) q = q.or(`assigned_to.eq.${scope.ownerId},created_by.eq.${scope.ownerId}`);
+  const { data, error } = await q;
   if (error) throw new Error(`overdue_task evaluation failed: ${error.message}`);
 
   const rows = (data ?? []) as Array<{ id: string; due_date: string }>;

@@ -25,11 +25,13 @@ import { fingerprint, changed } from "./dedup.js";
 import { dataEvaluators } from "./conditions.js";
 
 export const TRIGGER_SELECT =
-  "id, name, condition_source, condition_type, connector, params, action_type, playbook_id, action_params, last_state, created_by, enabled";
+  "id, name, scope, owner_id, condition_source, condition_type, connector, params, action_type, playbook_id, action_params, last_state, created_by, enabled";
 
 export interface TriggerRow {
   id: string;
   name: string;
+  scope?: "org" | "personal";
+  owner_id?: string | null;
   condition_source: "data" | "connector";
   condition_type: string;
   connector: string | null;
@@ -201,7 +203,13 @@ export async function evaluateDataTriggers(
         continue;
       }
       evaluated++;
-      const result = await evaluator(ctx, t.params ?? {});
+      // A personal watch restricts evaluation to its owner's records for
+      // conditions that have a per-user owner (the task conditions); other
+      // conditions ignore scope and evaluate company-wide (M3).
+      const result = await evaluator(ctx, t.params ?? {}, {
+        scope: t.scope ?? "org",
+        ownerId: t.owner_id ?? null,
+      });
       const fp = fingerprint(result.rows.map((r) => r.id), result.state_field);
 
       if (dryEvaluate) {

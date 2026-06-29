@@ -35,6 +35,14 @@ import {
 
 const ALL_CONDITION_TYPES = [...DATA_CONDITION_TYPES, ...CONNECTOR_CONDITION_TYPES];
 
+// Conditions whose underlying data has no per-user owner. For these,
+// 'personal' scope cannot restrict evaluation (customers have no owner;
+// the financial books are company-wide), so it is a presentation label
+// only - the watch still evaluates company-wide. create_trigger says so
+// in a note. The task conditions (overdue_task, stuck_task) are the
+// ownable ones and ARE filtered by owner. (M3, 2026-06-29 review.)
+const NON_OWNABLE_CONDITIONS = new Set(["stalled_deal", "overspend", "budget_threshold"]);
+
 // ── Validation helpers ─────────────────────────────────────
 
 async function assertPlaybookBelongsToCompany(ctx: ToolContext, playbookId: string): Promise<void> {
@@ -133,8 +141,8 @@ export const triggerTools: ToolMap = {
       playbook_id: z.string().uuid().optional().describe("Required when action_type is run_playbook. Must belong to this company."),
       action_params: z.record(z.unknown()).optional().describe("Templated action params; resolved + classified inside preview_action when the action runs."),
       cadence_hint: z.enum(["hourly", "daily", "weekly"]).optional().describe("Advisory check cadence. Default daily."),
-      scope: z.enum(["org", "personal"]).optional().describe("Visibility. Default org."),
-      owner_id: z.string().optional().describe("Owner for personal-scope triggers."),
+      scope: z.enum(["org", "personal"]).optional().describe("Default org. For the task conditions (overdue_task, stuck_task), 'personal' restricts evaluation to the owner's tasks (assigned to OR created by owner_id). For deal/spend conditions, which have no per-user owner, 'personal' is a label only and the watch still evaluates company-wide."),
+      owner_id: z.string().optional().describe("Owner for a personal-scope watch. Defaults to the creator when scope is 'personal'. The watch fires only on tasks assigned to OR created by this owner (task conditions only)."),
       digest: z.boolean().optional().describe("Roll up into a digest rather than firing individually. Default false."),
       bound_entity_type: z.string().optional().describe("Entity this watch is bound to (e.g. 'customer'), for cascade cleanup."),
       bound_entity_id: z.string().uuid().optional().describe("Id of the bound entity."),
@@ -157,6 +165,12 @@ export const triggerTools: ToolMap = {
       // cascade cleanup and the "installed by automation" badge can find them.
       const created_by = p.source_run_id ? `playbook:${p.source_run_id}` : ctx.userId;
 
+      // A personal watch needs an owner to filter by; default it to the
+      // creator so a personal task watch is scoped to "my" tasks out of the
+      // box rather than silently evaluating company-wide.
+      const scope = p.scope ?? "org";
+      const owner_id = scope === "personal" ? (p.owner_id ?? ctx.userId) : (p.owner_id ?? null);
+
       const { data, error } = await ctx.db.from("triggers").insert({
         company_id: ctx.companyId,
         name: p.name,
@@ -168,8 +182,8 @@ export const triggerTools: ToolMap = {
         playbook_id: p.playbook_id ?? null,
         action_params: p.action_params ?? {},
         cadence_hint: p.cadence_hint ?? "daily",
-        scope: p.scope ?? "org",
-        owner_id: p.owner_id ?? null,
+        scope,
+        owner_id,
         digest: p.digest ?? false,
         bound_entity_type: p.bound_entity_type ?? null,
         bound_entity_id: p.bound_entity_id ?? null,
@@ -178,7 +192,22 @@ export const triggerTools: ToolMap = {
       }).select(TRIGGER_SELECT + ", cadence_hint").maybeSingle();
       if (error) throw new Error(`Failed to create trigger: ${error.message}`);
 
-      return { success: true, trigger: data, render: listTriggersRender(data ? [data as unknown as Record<string, unknown>] : []) };
+      // Personal scope only filters evaluation for conditions that have a
+      // per-user owner (the task conditions). For deal/spend conditions the
+      // underlying data is company-owned, so 'personal' is a label only and
+      // the watch still evaluates company-wide - say so rather than let it
+      // silently surprise the user (M3).
+      const note =
+        scope === "personal" && NON_OWNABLE_CONDITIONS.has(p.condition_type)
+          ? `Note: "${p.condition_type}" has no per-user owner, so personal scope is a label here - this watch evaluates company-wide, not just your records.`
+          : undefined;
+
+      return {
+        success: true,
+        trigger: data,
+        ...(note ? { note } : {}),
+        render: listTriggersRender(data ? [data as unknown as Record<string, unknown>] : []),
+      };
     },
   },
 

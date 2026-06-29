@@ -160,3 +160,37 @@ describe("create_trigger playbook authorship", () => {
     expect(store.get("triggers")![0].created_by).toBe("doug");
   });
 });
+
+describe("create_trigger scope/owner (M3)", () => {
+  const create = (triggerTools.create_trigger.handler as (c: ToolContext, p: unknown) => Promise<any>);
+
+  it("defaults owner_id to the creator for a personal task watch, with no note", async () => {
+    const store = new Map<string, Row[]>([["triggers", []]]);
+    const res = await create(ctxWith(store), {
+      name: "My overdue", condition_type: "overdue_task", action_type: "notify", scope: "personal",
+    });
+    expect(res.success).toBe(true);
+    expect(res.note).toBeUndefined();
+    expect(store.get("triggers")![0].scope).toBe("personal");
+    expect(store.get("triggers")![0].owner_id).toBe("doug"); // ctxWith userId
+  });
+
+  it("returns a presentation-only note for a personal deal/spend watch", async () => {
+    const store = new Map<string, Row[]>([["triggers", []]]);
+    const res = await create(ctxWith(store), {
+      name: "Spend watch", condition_type: "overspend", action_type: "notify", scope: "personal",
+      params: { threshold_cents: 100000 },
+    });
+    expect(String(res.note)).toContain("company-wide");
+    expect(store.get("triggers")![0].scope).toBe("personal");
+  });
+
+  it("org scope leaves owner_id null and emits no note", async () => {
+    const store = new Map<string, Row[]>([["triggers", []]]);
+    const res = await create(ctxWith(store), {
+      name: "Team overdue", condition_type: "overdue_task", action_type: "notify",
+    });
+    expect(res.note).toBeUndefined();
+    expect(store.get("triggers")![0].owner_id ?? null).toBeNull();
+  });
+});

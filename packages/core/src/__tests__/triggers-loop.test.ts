@@ -344,6 +344,38 @@ describe("connector loop — overdue_invoice returns a check, reports fire + ded
   });
 });
 
+describe("scope filter — a personal task watch only sees the owner's tasks (M3)", () => {
+  function setup(scope: "org" | "personal", ownerId: string | null): Map<string, Row[]> {
+    const store = new Map<string, Row[]>();
+    store.set("triggers", [
+      {
+        id: "trg-od", company_id: "default", name: "Overdue", scope, owner_id: ownerId,
+        condition_source: "data", condition_type: "overdue_task", connector: null,
+        params: {}, action_type: "notify", playbook_id: null, action_params: {},
+        last_state: null, last_fired_at: null, created_by: "agent", enabled: true, deleted_at: null,
+      },
+    ]);
+    store.set("tasks", [
+      { id: "t-created-mine", company_id: "default", status: "todo", due_date: "2020-01-01", created_by: "agent", assigned_to: null, deleted_at: null },
+      { id: "t-assigned-mine", company_id: "default", status: "todo", due_date: "2020-01-01", created_by: "doug", assigned_to: "agent", deleted_at: null },
+      { id: "t-dougs", company_id: "default", status: "todo", due_date: "2020-01-01", created_by: "doug", assigned_to: "doug", deleted_at: null },
+    ]);
+    return store;
+  }
+
+  it("personal watch fires only on the owner's tasks (assigned to OR created by)", async () => {
+    const res = await evaluate(makeCtx(setup("personal", "agent")));
+    expect(res.fired_count).toBe(1);
+    // owner 'agent' owns the created-by and assigned-to tasks (2), not doug's (3rd).
+    expect(String(res.fired[0].brief)).toContain("2 overdue");
+  });
+
+  it("org watch evaluates company-wide (all three)", async () => {
+    const res = await evaluate(makeCtx(setup("org", null)));
+    expect(String(res.fired[0].brief)).toContain("3 overdue");
+  });
+});
+
 describe("resolve_trigger_fire — interactive drain marks acted / dismissed", () => {
   let store: Map<string, Row[]>;
   let ctx: ToolContext;
