@@ -12,7 +12,8 @@
 //   - a rejected action cannot run
 //   - paused returns the paused outcome and records no pending row
 //   - execute_action refuses a token whose action was altered (hash mismatch)
-//   - approve_action is NOT in the agent tool map
+//   - approve_action IS registered (human interactive sessions need it)
+//   - approve_action enforces a non-empty approver_id so self-approval is auditable
 // ============================================================
 
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
@@ -492,11 +493,11 @@ describe("reconcile — turns 'cannot prevent' into 'cannot hide'", () => {
 });
 
 describe("approver-identity separation (the one real lever)", () => {
-  it("approve_action is NOT registered in the agent tool map", () => {
-    expect(Object.keys(governanceTools)).not.toContain("approve_action");
+  it("approve_action IS registered so interactive human sessions (e.g. Cowork) can approve held actions", () => {
+    expect(Object.keys(governanceTools)).toContain("approve_action");
   });
 
-  it("registerGovernanceTools registers the agent tools but not approve_action", () => {
+  it("registerGovernanceTools registers approve_action alongside the other tools", () => {
     const registered: string[] = [];
     const fakeServer = {
       registerTool: (name: string) => registered.push(name),
@@ -504,6 +505,16 @@ describe("approver-identity separation (the one real lever)", () => {
     registerGovernanceTools(fakeServer, makeCtx());
     expect(registered).toContain("preview_action");
     expect(registered).toContain("execute_action");
-    expect(registered).not.toContain("approve_action");
+    expect(registered).toContain("approve_action");
+  });
+
+  it("approve_action enforces a non-empty human approver_id at the function level", async () => {
+    // Autonomous agents are instructed not to call this tool. Any that do
+    // anyway must supply a non-empty approver_id, making the self-approval
+    // visible via reconcile_actions after the fact.
+    const ctx = makeCtx();
+    await expect(
+      approveAction(ctx, { approval_id: "any", decision: "approve", approver_id: "" })
+    ).rejects.toThrow(/approver/i);
   });
 });

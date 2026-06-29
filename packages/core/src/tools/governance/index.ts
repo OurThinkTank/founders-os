@@ -701,7 +701,7 @@ export const governanceTools: ToolMap = {
   list_pending_approvals: {
     title: "List Pending Approvals",
     description:
-      "List actions that are held and waiting for a human to approve or reject. Read-only surface. Approval itself is a human action (approve_action is not available to the agent). Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+      "List actions that are held and waiting for a human to approve or reject. Read-only surface. To act on a held item, use approve_action (human-only — see its description). Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({}),
     // Second param required to stay contextual; see get_policy note above.
     handler: async (ctx: ToolContext, _args: Record<string, never>) => {
@@ -800,11 +800,62 @@ export const governanceTools: ToolMap = {
       };
     },
   },
+
+  approve_action: {
+    title: "Approve or Reject a Held Action",
+    description:
+      "HUMAN-ONLY TOOL. Approve or reject a held action so the next execute_action call can proceed. " +
+      "Pass approval_id (from list_pending_approvals) or jti (from the Slack notification), your decision " +
+      "('approve' or 'reject'), and approver_id (your user id — must be a human member, not the agent). " +
+      "On approval, returns a fresh confirm_token to pass to execute_action. " +
+      "AUTONOMOUS AGENTS MUST NOT CALL THIS TOOL. It exists for interactive human sessions only. " +
+      "Calling it from a scheduled or autonomous context defeats the approval gate. " +
+      "Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      approval_id: z.string().optional().describe("UUID of the pending approval (from list_pending_approvals)."),
+      jti: z.string().optional().describe("The jti reference from the Slack notification (alternative to approval_id)."),
+      decision: z.enum(["approve", "reject"]).describe("Your decision on this action."),
+      approver_id: z.string().describe("Your user id. Must be a human member — the approver must not be the agent that proposed the action."),
+    }),
+    handler: async (ctx: ToolContext, args: { approval_id?: string; jti?: string; decision: "approve" | "reject"; approver_id: string }) => {
+      const result = await approveAction(ctx, args) as {
+        success: boolean;
+        approval_id: string;
+        status: string;
+        approver: string;
+        confirm_token?: string;
+        note: string;
+      };
+      const approved = args.decision === "approve";
+      const md = approved
+        ? `Approved. Pass the \`confirm_token\` to execute_action to run the held action.\n\n**Ref:** ${args.approval_id ?? args.jti}\n**Approver:** ${args.approver_id}`
+        : `Rejected. The held action will not run.\n\n**Ref:** ${args.approval_id ?? args.jti}\n**Approver:** ${args.approver_id}`;
+      return {
+        ...result,
+        render: {
+          tier_1: {
+            format_hint: "decision",
+            instructions: {
+              scope: "Show the outcome of the approval decision.",
+              format: approved
+                ? "Show 'Approved' prominently. Surface the confirm_token (the agent needs it for execute_action) and remind the user to paste it into the next clock session or call execute_action themselves."
+                : "Show 'Rejected' prominently in red per the standard color conventions. No further action needed.",
+              forbidden: "Do not present the confirm_token as secret — the human needs to hand it to execute_action.",
+            },
+          },
+          tier_3: { markdown: md },
+          do_not: ["Do not invent new color meanings; use the standard color conventions."],
+        } satisfies Render,
+      };
+    },
+  },
 };
 
 export function registerGovernanceTools(server: McpServer, ctx: ToolContext): void {
-  // NOTE: approveAction is intentionally NOT registered here. Approval is
-  // a human-channel action; exposing it to the agent would let the same
-  // session that proposes an action also approve it, collapsing the gate.
+  // approve_action IS registered here so it is visible in interactive human
+  // sessions (e.g. Cowork). The tool description explicitly forbids autonomous
+  // agents from calling it. The approver_id parameter must be a human member
+  // and is recorded in the audit log, so any self-approval is visible after
+  // the fact via reconcile_actions.
   registerToolMap(server, governanceTools, ctx);
 }
