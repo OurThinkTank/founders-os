@@ -878,9 +878,9 @@ export const restoreTools: ToolMap = {
             scope:
               "render the `items` array as the recoverable trash, grouped by entity_type; show label, deleted_at, and recoverable_until per row, with total as the headline.",
             format:
-              "table or grouped list with a type label per group; show the human label prominently and the deleted / recoverable dates as secondary detail.",
+              "table or grouped list with a type label per group; show the human label prominently and the deleted / recoverable dates as secondary detail. Give every row a one-click Restore action wired with sendPrompt(`restore the <entity_type> \"<label>\"`) so the user can recall it without typing an id, and offer a single 'Restore all' affordance wired with sendPrompt('restore all items in the trash'). Recovery is the primary action; keep it visually dominant.",
             forbidden:
-              "do not display entity_id to the user; do not invent items not in the array; do not present this as full history - it is only the recoverable window.",
+              "do not display entity_id to the user; do not invent items not in the array; do not present this as full history - it is only the recoverable window; do not offer permanent-delete (purge) as a primary action - recovery is the point of this view.",
           },
         },
         tier_3: { markdown },

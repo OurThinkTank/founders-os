@@ -119,6 +119,23 @@ describe("risk classifier — tiers", () => {
     expect(r.tier).toBe("read");
   });
 
+  it("native SOFT delete (reversible) stays native_create", () => {
+    for (const action of ["remove_task", "delete_trigger", "remove_customer", "archive_project"]) {
+      const r = classifyAction({ kind: "native", action, params: { id: "x" } });
+      expect(r.tier, action).toBe("native_create");
+      expect(r.destructive, action).toBe(false);
+    }
+  });
+
+  it("native HARD purge (irreversible) -> destructive, held by the red floor", () => {
+    for (const action of ["purge_item", "purge_items", "destroy_record", "truncate_table"]) {
+      const r = classifyAction({ kind: "native", action, params: { id: "x" } });
+      expect(r.tier, action).toBe("destructive");
+      expect(r.destructive, action).toBe(true);
+      expect(RED_TIERS.has(r.tier), action).toBe(true);
+    }
+  });
+
   it("destructive + sensitive data escalates to exfiltration (the worst signal wins)", () => {
     const r = classifyAction({
       kind: "external",

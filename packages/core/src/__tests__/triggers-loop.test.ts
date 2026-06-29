@@ -132,6 +132,8 @@ const report = (ctx: ToolContext, params: unknown) =>
   (triggerTools.report_trigger_observation.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
 const listFires = (ctx: ToolContext, params: unknown = {}) =>
   (triggerTools.list_trigger_fires.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
+const resolveFire = (ctx: ToolContext, params: unknown) =>
+  (triggerTools.resolve_trigger_fire.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
 
 function daysAgo(n: number): string {
   return new Date(Date.now() - n * 86_400_000).toISOString();
@@ -339,5 +341,53 @@ describe("connector loop — overdue_invoice returns a check, reports fire + ded
       playbook_id: null, action_params: {}, last_state: null, created_by: "agent", enabled: true, deleted_at: null,
     });
     await expect(report(ctx, { trigger_id: "trg-data", rows: [{ id: "a" }] })).rejects.toThrow(/data condition/i);
+  });
+});
+
+describe("resolve_trigger_fire — interactive drain marks acted / dismissed", () => {
+  let store: Map<string, Row[]>;
+  let ctx: ToolContext;
+
+  beforeEach(() => {
+    store = new Map<string, Row[]>();
+    store.set("trigger_fires", [
+      {
+        id: "fire-1", company_id: "default", trigger_id: "trg-od",
+        condition_type: "overdue_task", brief: "1 overdue task", fingerprint: "fp",
+        action: {}, status: "pending", acted_at: null, acted_by: null,
+      },
+    ]);
+    ctx = makeCtx(store);
+  });
+
+  it("marks a pending fire acted and drops it from the pending list", async () => {
+    const res = await resolveFire(ctx, { fire_id: "fire-1", status: "acted" });
+    expect(res.success).toBe(true);
+    expect(res.fire.status).toBe("acted");
+
+    const row = (store.get("trigger_fires") ?? [])[0];
+    expect(row.status).toBe("acted");
+    expect(row.acted_at).toBeTruthy();
+    expect(row.acted_by).toBe("agent");
+
+    const pending = await listFires(ctx, {});
+    expect(pending.count).toBe(0);
+  });
+
+  it("dismisses a fire as noise", async () => {
+    const res = await resolveFire(ctx, { fire_id: "fire-1", status: "dismissed", note: "expected, ignore" });
+    expect(res.fire.status).toBe("dismissed");
+    expect((store.get("trigger_fires") ?? [])[0].status).toBe("dismissed");
+  });
+
+  it("throws when the fire does not exist", async () => {
+    await expect(resolveFire(ctx, { fire_id: "00000000-0000-0000-0000-000000000000", status: "acted" }))
+      .rejects.toThrow(/not found/i);
+  });
+
+  it("does not resolve a fire belonging to another company", async () => {
+    store.get("trigger_fires")![0].company_id = "other-co";
+    await expect(resolveFire(ctx, { fire_id: "fire-1", status: "acted" })).rejects.toThrow(/not found/i);
+    expect((store.get("trigger_fires") ?? [])[0].status).toBe("pending");
   });
 });

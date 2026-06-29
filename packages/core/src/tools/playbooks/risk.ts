@@ -119,6 +119,18 @@ const READ_VERBS = new Set([
   "show", "describe", "lookup", "preview", "summarize",
 ]);
 
+// Native verbs that destroy Founders OS data IRREVERSIBLY — a hard purge
+// that skips the soft-delete recovery window. These are the one native
+// case that is NOT safe to run unattended. A reversible native delete
+// (remove_*/delete_* set deleted_at and are recoverable via restore_item)
+// stays native_create; only this purge family escalates to destructive so
+// the red-tier floor holds it for a human. Matched per-token, so
+// "purge_item"/"purge_items" -> "purge".
+const IRREVERSIBLE_NATIVE_VERBS = new Set([
+  "purge", "destroy", "wipe", "erase", "truncate", "drop",
+  "shred", "obliterate",
+]);
+
 function tokens(s: string | null | undefined): string[] {
   return (s ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
@@ -321,13 +333,26 @@ export function classifyAction(action: ProposedAction): ActionAssessment {
   let financial: string[] = [];
 
   if (action.kind === "native") {
-    const isRead = hasVerb(action.action, READ_VERBS);
-    tier = isRead ? "read" : "native_create";
-    reasons.push(
-      isRead
-        ? "Reads data inside Founders OS."
-        : "Creates a task or row inside Founders OS."
-    );
+    const isIrreversible = hasVerb(action.action, IRREVERSIBLE_NATIVE_VERBS);
+    const isRead = hasVerb(action.action, READ_VERBS) && !isIrreversible;
+    if (isIrreversible) {
+      // A hard purge of local data — irreversible, skips the recovery
+      // window. Held by the red-tier floor so a human, not the agent,
+      // clears it. Reversible (soft) native deletes do not land here.
+      tier = "destructive";
+      destructive = true;
+      reasons.push(
+        `Permanently destroys Founders OS data ("${action.action ?? "?"}"): an irreversible purge that skips the soft-delete recovery window.`
+      );
+    } else if (isRead) {
+      tier = "read";
+      reasons.push("Reads data inside Founders OS.");
+    } else {
+      tier = "native_create";
+      reasons.push(
+        "Creates or reversibly changes data inside Founders OS (soft-deletes are recoverable via restore_item)."
+      );
+    }
   } else {
     const isDestructive = hasVerb(action.action, DESTRUCTIVE_VERBS);
     const isRead = hasVerb(action.action, READ_VERBS) && !isDestructive;

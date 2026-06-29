@@ -432,6 +432,38 @@ export const triggerTools: ToolMap = {
       };
     },
   },
+
+  resolve_trigger_fire: {
+    title: "Resolve Trigger Fire",
+    description:
+      "Clear an inbox fire after you have dealt with it. Set status to 'acted' once you have routed the fire through preview_action (it has become a staged approval), or 'dismissed' when the fire is noise and needs no action. Marking it stamps acted_at/acted_by and audits the resolution, so a drained fire stops reappearing in the next session's briefing. This is the interactive counterpart to the autonomous runner, which marks fires 'acted' itself. A worsening re-fire still re-opens the row to 'pending'.",
+    parameters: z.object({
+      fire_id: z.string().uuid().describe("UUID of the trigger_fires row (from list_trigger_fires)."),
+      status: z.enum(["acted", "dismissed"]).describe("'acted' when routed through preview_action; 'dismissed' when it is noise."),
+      note: z.string().optional().describe("Optional short reason, recorded on the audit entry."),
+    }),
+    handler: async (ctx: ToolContext, { fire_id, status, note }: { fire_id: string; status: "acted" | "dismissed"; note?: string }) => {
+      const { data, error } = await ctx.db
+        .from("trigger_fires")
+        .update({ status, acted_at: new Date().toISOString(), acted_by: ctx.userId })
+        .eq("company_id", ctx.companyId)
+        .eq("id", fire_id)
+        .select("id, trigger_id, condition_type, brief, status")
+        .maybeSingle();
+      if (error) throw new Error(`Failed to resolve trigger fire: ${error.message}`);
+      if (!data) throw new Error(`Trigger fire ${fire_id} not found.`);
+      const row = data as Record<string, unknown>;
+
+      await writeAuditLog(ctx, {
+        action: "trigger_fire_resolved",
+        entity_type: "trigger_fire",
+        entity_id: fire_id,
+        metadata: { status, condition_type: row.condition_type, trigger_id: row.trigger_id, ...(note ? { note } : {}) },
+      });
+
+      return { success: true, fire: row };
+    },
+  },
 };
 
 export function registerTriggerTools(server: McpServer, ctx: ToolContext): void {
