@@ -661,7 +661,10 @@ select{cursor:pointer;appearance:none;
       </div>
       <div class="notice notice-info" style="margin-top:8px">Use a full absolute path (starting with <code>/</code>), not <code>~</code> - launchd and systemd do not expand <code>~</code> and will silently fail to start (exit 78) if you use it.</div>
 
-      <p class="install-note" style="margin-top:16px"><strong>1. Credentials file</strong> - save as <code>~/.config/founders-os/foundersos-tick.env</code> (<code>mkdir -p ~/.config/founders-os</code> first, then <code>chmod 600</code> the file):</p>
+      <p class="install-note" style="margin-top:16px"><strong>1. Credentials file</strong> - create the folder, save the file below into it as <code>foundersos-tick.env</code>, then lock it down:</p>
+      <div class="code-block">mkdir -p ~/.config/founders-os
+# save the downloaded foundersos-tick.env into that folder, then:
+chmod 600 ~/.config/founders-os/foundersos-tick.env</div>
       <div class="output-actions">
         <button class="btn btn-primary" onclick="copyToClipboard('schedEnvCode','toast-sched-env-copy')">Copy</button>
         <button class="btn btn-secondary" onclick="downloadSchedEnv()">Download .env</button>
