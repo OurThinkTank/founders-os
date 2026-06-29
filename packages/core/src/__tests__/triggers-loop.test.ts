@@ -244,6 +244,28 @@ describe("detect inbox — evaluateDataTriggers writeInbox upserts trigger_fires
     expect(listed.count).toBe(1);
     expect(String(listed.fires[0].brief)).toContain("overdue");
   });
+
+  // The evaluate_triggers TOOL exposes write_inbox so a session can force a
+  // check that also stages fires (e.g. for testing the run pipeline).
+  it("evaluate_triggers tool leaves the inbox empty by default", async () => {
+    const res = await evaluate(ctx);
+    expect(res.fired_count).toBe(1);
+    expect(store.get("trigger_fires") ?? []).toEqual([]);
+  });
+
+  it("evaluate_triggers tool with write_inbox:true stages the fire", async () => {
+    const res = await evaluate(ctx, { write_inbox: true });
+    expect(res.fired_count).toBe(1);
+    const inbox = store.get("trigger_fires") ?? [];
+    expect(inbox.length).toBe(1);
+    expect(inbox[0].status).toBe("pending");
+  });
+
+  it("evaluate_triggers tool ignores write_inbox when dry_evaluate is true", async () => {
+    const res = await evaluate(ctx, { write_inbox: true, dry_evaluate: true });
+    expect(res.fired_count).toBe(1); // dry still reports what would fire
+    expect(store.get("trigger_fires") ?? []).toEqual([]); // but writes nothing
+  });
 });
 
 describe("Q1/Q2 — a misconfigured trigger is isolated, not fatal, and surfaced", () => {

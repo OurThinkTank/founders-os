@@ -289,18 +289,20 @@ export const triggerTools: ToolMap = {
   evaluate_triggers: {
     title: "Evaluate Triggers",
     description:
-      "Run all enabled triggers for the company. Data conditions are evaluated, deduped, and fire-claimed server-side; the response's `fired` array lists those that newly fired with a resolved-action reference and brief. Connector conditions are NOT fired here; they are returned in `connector_checks` for you to run the named connector tool and then call report_trigger_observation. Set dry_evaluate true to see what would fire without recording it. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+      "Run all enabled triggers for the company. Data conditions are evaluated, deduped, and fire-claimed server-side; the response's `fired` array lists those that newly fired with a resolved-action reference and brief. Connector conditions are NOT fired here; they are returned in `connector_checks` for you to run the named connector tool and then call report_trigger_observation. Set dry_evaluate true to see what would fire without recording it. Set write_inbox true ONLY when the user wants the fires staged into the trigger_fires inbox for later review (e.g. 'check my watches and stage them', or to test the run pipeline); a normal live check leaves write_inbox false and just returns the fires. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({
       condition_types: z.array(z.string()).optional().describe("Restrict to these condition_types. Omit for all."),
       dry_evaluate: z.boolean().optional().describe("Evaluate without fire-claiming (no state writes). Default false."),
+      write_inbox: z.boolean().optional().describe("Also upsert newly fired data conditions into the trigger_fires inbox for later review. Default false (a live check returns fires without queuing them). Ignored when dry_evaluate is true."),
     }),
-    handler: async (ctx: ToolContext, { condition_types, dry_evaluate = false }: { condition_types?: string[]; dry_evaluate?: boolean }) => {
-      // Detection is the shared core (also used by the detect tick). The
-      // tool does not write the inbox — it returns fires in its response.
+    handler: async (ctx: ToolContext, { condition_types, dry_evaluate = false, write_inbox = false }: { condition_types?: string[]; dry_evaluate?: boolean; write_inbox?: boolean }) => {
+      // Detection is the shared core (also used by the detect tick). By
+      // default the tool returns fires in its response without queuing them;
+      // write_inbox lets a session stage them (a dry run never writes).
       const { evaluated, fired, connectorTriggers, errors } = await evaluateDataTriggers(ctx, {
         conditionTypes: condition_types,
         dryEvaluate: dry_evaluate,
-        writeInbox: false,
+        writeInbox: write_inbox && !dry_evaluate,
       });
 
       // Build connector checks from the enabled connector-source triggers.
