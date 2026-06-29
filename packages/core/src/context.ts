@@ -125,10 +125,41 @@ export function buildContext(): ToolContext {
     userId: getUserId(),
     identityMode: "env",
     isSoloMode: isSoloMode(),
+    // The stdio MCP server is always a human-present session. The
+    // autonomous tick/run builds its own context with an 'autonomous'
+    // actor; that is what the hard gate refuses hold-tier clearances for.
+    actor: { kind: "interactive", userId: getUserId() },
     embedding: readEmbeddingConfigFromEnv(),
   };
 
   return cached;
+}
+
+/**
+ * Build a ToolContext for the unattended autonomous runner
+ * (`founders-os-tick run`). Same env-driven identity and clients as
+ * buildContext, but:
+ *   - actor is { kind: "autonomous" }, which the hard gate keys off so a
+ *     hold-tier action is staged for deferred approval and never executed.
+ *   - identityMode is "background" (a server-internal job, no end user).
+ *   - NOT cached: the runner is its own short-lived process, and we never
+ *     want the autonomous actor to leak into a cached interactive context.
+ *
+ * Throws (via createServiceClient / getCompanyId / getUserId) on the same
+ * misconfiguration buildContext does.
+ */
+export function buildAutonomousContext(runId: string): ToolContext {
+  const client = createServiceClient();
+  return {
+    db: client,
+    admin: client,
+    companyId: getCompanyId(),
+    userId: getUserId(),
+    identityMode: "background",
+    isSoloMode: isSoloMode(),
+    actor: { kind: "autonomous", runId },
+    embedding: readEmbeddingConfigFromEnv(),
+  };
 }
 
 /**

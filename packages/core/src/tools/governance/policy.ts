@@ -20,8 +20,18 @@ import { RED_TIERS, type RiskTier } from "../playbooks/risk.js";
 
 export type TierOutcome = "allow" | "allow_with_log" | "hold_for_approval";
 
-/** What preview_action actually returns; adds the override-only value. */
-export type ResolvedOutcome = TierOutcome | "paused";
+/**
+ * What preview_action actually returns; adds the override-only values.
+ *   "paused" - the company-wide kill switch is on.
+ *   "staged_for_deferred_approval" - the autonomous hard gate: an unattended
+ *               principal hit a hold-tier action it may never clear, so the
+ *               gate stages the fully-prepared action in the approval queue
+ *               for a human to approve, edit, or reject later instead of
+ *               executing it. See the autonomous branch in resolveOutcome.
+ *               (A genuinely malformed/unresolvable fire is "refused", which
+ *               is handled by the caller/runner, not produced here.)
+ */
+export type ResolvedOutcome = TierOutcome | "paused" | "staged_for_deferred_approval";
 
 export type TierOutcomes = Record<RiskTier, TierOutcome>;
 
@@ -53,8 +63,28 @@ export const VALID_OUTCOMES: ReadonlySet<string> = new Set<TierOutcome>([
  *   dry_run     -> "hold_for_approval" for every tier (hold + log all)
  *   red floor   -> destructive / exfiltration always hold
  *   otherwise   -> the stored tier outcome
+ *
+ * The autonomous HARD GATE is applied last, on top of the resolved base:
+ * an autonomous principal facing anything that resolves to
+ * hold_for_approval gets "staged_for_deferred_approval" instead - the
+ * action is prepared and queued, never executed unattended. This is the
+ * read-time half of an un-lowerable floor (execute_action re-checks
+ * ctx.actor at clear time), mirroring how RED_TIERS are enforced in two
+ * places. There is no policy field that can turn it off - it is
+ * structural, not configurable. Passing `opts.autonomous` keeps this
+ * function pure (no ToolContext).
  */
 export function resolveOutcome(
+  policy: GuardrailPolicy,
+  tier: RiskTier,
+  opts?: { autonomous?: boolean }
+): ResolvedOutcome {
+  const base = resolveBaseOutcome(policy, tier);
+  if (opts?.autonomous && base === "hold_for_approval") return "staged_for_deferred_approval";
+  return base;
+}
+
+function resolveBaseOutcome(
   policy: GuardrailPolicy,
   tier: RiskTier
 ): ResolvedOutcome {

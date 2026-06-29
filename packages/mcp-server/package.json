@@ -6,7 +6,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "founders-os": "./dist/index.js"
+    "founders-os": "./dist/index.js",
+    "founders-os-tick": "./dist/tick.js"
   },
   "files": [
     "dist"

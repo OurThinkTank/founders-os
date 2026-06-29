@@ -29,6 +29,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerToolMap, type ToolMap } from "../register.js";
 import type { ToolContext } from "../../types/context.js";
+import { isAutonomous } from "../../types/context.js";
 import type { Render } from "../../types/render.js";
 import { writeAuditLog } from "../audit.js";
 import {
@@ -227,14 +228,28 @@ export async function approveAction(
     jti?: string;
     decision: "approve" | "reject";
     approver_id: string;
+    /**
+     * Optional edited action payload. When supplied with decision
+     * "approve", this is the EDIT-THEN-EXECUTE reviewer move: the human
+     * changes the staged payload (e.g. softens the message, fixes an
+     * amount) and approves the edited version. The server RE-CLASSIFIES
+     * the edited action from scratch (never trusting a caller tier) and
+     * re-binds the token + row to the edited action's hash and tier, so
+     * an edit can neither dodge the floor nor execute a different action
+     * than the one approved.
+     */
+    edited_action?: ProposedActionInput;
   }
 ): Promise<unknown> {
-  const { approval_id, jti, decision, approver_id } = params;
+  const { approval_id, jti, decision, approver_id, edited_action } = params;
   if (!approval_id && !jti) {
     throw new Error("approve_action requires approval_id or jti.");
   }
   if (!approver_id || approver_id.trim().length === 0) {
     throw new Error("approve_action requires a human approver_id (the approver must not be the agent).");
+  }
+  if (edited_action && decision !== "approve") {
+    throw new Error("edited_action is only valid with decision 'approve'.");
   }
 
   let q = ctx.db
@@ -249,11 +264,42 @@ export async function approveAction(
     throw new Error(`Approval is already '${row.status}'; only a pending approval can be decided.`);
   }
 
+  const editing = decision === "approve" && edited_action != null;
+
+  // Effective binding the cleared token will carry. For an edit we
+  // re-classify the edited payload from scratch (the tier is DERIVED, never
+  // taken from the caller), so an edit cannot lower the tier past the floor
+  // and cannot smuggle a blocked URL/host through.
+  let effHash = row.action_hash as string;
+  let effTier = row.tier as RiskTier;
+  let editedResolved: ProposedAction | undefined;
+  const editPatch: Record<string, unknown> = {};
+  if (editing) {
+    editedResolved = toProposedAction(edited_action!);
+    const assessment = classifyAction(editedResolved);
+    if (assessment.blocks.length > 0) {
+      throw new Error(
+        `Edited action is refused: ${assessment.blocks.map((b) => b.detail).join(" ")}`
+      );
+    }
+    effHash = actionHash(editedResolved);
+    effTier = assessment.tier;
+    editPatch.action_params = editedResolved.params ?? {};
+    editPatch.action_hash = effHash;
+    editPatch.action_type = `${editedResolved.kind}:${editedResolved.connector ?? "founders-os"}:${editedResolved.action ?? "action"}`;
+    editPatch.tier = effTier;
+    editPatch.summary =
+      editedResolved.summary ??
+      `${editedResolved.kind === "external" ? editedResolved.connector ?? "connector" : "Founders OS"} ${editedResolved.action ?? "action"}`;
+  }
+
   const nextStatus = decision === "approve" ? "approved" : "rejected";
   const nowIso = new Date().toISOString();
 
   // Atomic decide: only flips a row that is still 'pending'. If a
   // concurrent decision already moved it, zero rows return and we refuse.
+  // For an edit, the new payload + hash + tier are written in the same
+  // atomic flip so the row can never be approved with stale bindings.
   const { data: updated, error: upErr } = await ctx.db
     .from("pending_approvals")
     .update({
@@ -261,6 +307,7 @@ export async function approveAction(
       approved_by: approver_id,
       approved_at: nowIso,
       updated_at: nowIso,
+      ...editPatch,
     })
     .eq("company_id", ctx.companyId)
     .eq("id", row.id)
@@ -270,24 +317,42 @@ export async function approveAction(
   if (upErr) throw new Error(`Failed to record decision: ${upErr.message}`);
   if (!updated) throw new Error("Approval was already decided by someone else.");
 
+  // Record the edit distinctly from the approval so the trail shows both
+  // that the payload changed and who shipped it.
+  if (editing) {
+    await writeAuditLog(ctx, {
+      action: "action_edited",
+      entity_type: "action",
+      entity_id: row.id,
+      metadata: {
+        jti: row.jti,
+        approver: approver_id,
+        before: { tier: row.tier, action_type: row.action_type, action_hash: row.action_hash },
+        after: { tier: effTier, action_type: editPatch.action_type, action_hash: effHash },
+      },
+    });
+  }
+
   await writeAuditLog(ctx, {
     action: decision === "approve" ? "action_approved" : "action_rejected",
     entity_type: "action",
     entity_id: row.id,
     metadata: {
       jti: row.jti,
-      tier: row.tier,
-      action_type: row.action_type,
+      tier: effTier,
+      action_type: editing ? editPatch.action_type : row.action_type,
       approver: approver_id,
+      edited: editing,
     },
   });
 
-  // On approval, mint a FRESH token bound to the same jti + action_hash
-  // so the next clock tick (or callback) executes inside a valid window
-  // even though the original preview token has long expired.
+  // On approval, mint a FRESH token bound to the jti + the EFFECTIVE hash
+  // and tier (the edited ones when editing), so the next clock tick or the
+  // human's own execute runs inside a valid window against the exact action
+  // that was approved.
   let confirm_token: string | undefined;
   if (decision === "approve") {
-    confirm_token = issueToken(row.jti, row.action_hash, row.tier as RiskTier).token;
+    confirm_token = issueToken(row.jti, effHash, effTier).token;
   }
 
   return {
@@ -295,10 +360,16 @@ export async function approveAction(
     approval_id: row.id,
     status: nextStatus,
     approver: approver_id,
+    edited: editing,
     confirm_token,
+    // When edited, echo the re-classified action so the caller passes THIS
+    // exact object to execute_action (its hash must match the new token).
+    resolved_action: editing ? editedResolved : undefined,
     note:
       decision === "approve"
-        ? "Approved. The fresh confirm_token authorizes execute_action for this exact action until it expires."
+        ? editing
+          ? "Approved with edits. The edited action was re-classified; pass resolved_action + confirm_token to execute_action."
+          : "Approved. The fresh confirm_token authorizes execute_action for this exact action until it expires."
         : "Rejected. execute_action will refuse this action.",
   };
 }
@@ -422,14 +493,19 @@ export const governanceTools: ToolMap = {
       }
 
       const policy = await loadPolicy(ctx);
-      const outcome = resolveOutcome(policy, assessment.tier);
+      // The hard gate: an autonomous principal facing a hold-tier action
+      // resolves to "staged_for_deferred_approval" (see resolveOutcome) - the
+      // action is prepared and queued, never executed unattended. actor is
+      // unforgeable: it is set in buildContext, not by the caller.
+      const autonomous = isAutonomous(ctx);
+      const outcome = resolveOutcome(policy, assessment.tier, { autonomous });
       const hash = actionHash(resolved);
 
       await writeAuditLog(ctx, {
         action: "action_previewed",
         entity_type: "action",
         entity_id: hash,
-        metadata: { tier: assessment.tier, outcome, source, summary },
+        metadata: { tier: assessment.tier, outcome, source, summary, actor: ctx.actor?.kind ?? "interactive" },
       });
 
       // Paused: write nothing further, issue no token, perform nothing.
@@ -448,44 +524,77 @@ export const governanceTools: ToolMap = {
 
       const jti = randomUUID();
 
-      if (outcome === "hold_for_approval") {
-        const { token, payload } = issueToken(jti, hash, assessment.tier);
+      // hold_for_approval (interactive) and staged_for_deferred_approval
+      // (autonomous) both QUEUE the fire for a human; the difference is the
+      // token. A held action gets a confirm_token a human can later clear
+      // with. A staged action gets NO token: the autonomous runner has
+      // prepared the full action and queued it, but it can never clear it
+      // itself - a human approves, edits, or rejects it in an interactive
+      // session (the H2 path).
+      if (outcome === "hold_for_approval" || outcome === "staged_for_deferred_approval") {
+        const staged = outcome === "staged_for_deferred_approval";
         const nowIso = new Date().toISOString();
+        const tokenInfo = staged ? null : issueToken(jti, hash, assessment.tier);
+        const actionType = `${resolved.kind}:${resolved.connector ?? "founders-os"}:${resolved.action ?? "action"}`;
+
         const { error } = await ctx.db.from("pending_approvals").insert({
           id: jti, // reuse jti as the row id so callers can reference either
           company_id: ctx.companyId,
           jti,
-          action_type: `${resolved.kind}:${resolved.connector ?? "founders-os"}:${resolved.action ?? "action"}`,
+          action_type: actionType,
           action_params: resolved.params ?? {},
           action_hash: hash,
           tier: assessment.tier,
           source,
           summary,
           status: "pending",
-          token_expires_at: new Date(payload.exp * 1000).toISOString(),
+          // Non-null column; a staged row carries no live token, so stamp now.
+          token_expires_at: tokenInfo
+            ? new Date(tokenInfo.payload.exp * 1000).toISOString()
+            : nowIso,
           created_at: nowIso,
           updated_at: nowIso,
         });
         if (error) throw new Error(`Failed to record pending approval: ${error.message}`);
 
         await writeAuditLog(ctx, {
-          action: "action_held",
+          action: staged ? "action_staged" : "action_held",
           entity_type: "action",
           entity_id: jti,
-          metadata: { tier: assessment.tier, source, summary, jti },
+          metadata: { tier: assessment.tier, source, summary, jti, actor: ctx.actor?.kind ?? "interactive" },
         });
 
-        // Deliver the held action to a human: a native approval task is
-        // created (guaranteed); a channel-agnostic message suggestion is
-        // returned for the agent to dispatch through whatever messaging
-        // tool the user has connected.
+        // Deliver to a human: a native approval task is created (guaranteed);
+        // a channel-agnostic message suggestion is returned for an interactive
+        // agent to dispatch through whatever messaging tool the user has.
         const delivery = await deliverApproval(ctx, {
           id: jti,
           jti,
           summary,
           tier: assessment.tier,
-          action_type: `${resolved.kind}:${resolved.connector ?? "founders-os"}:${resolved.action ?? "action"}`,
+          action_type: actionType,
         });
+
+        if (staged) {
+          return {
+            outcome,
+            tier: assessment.tier,
+            summary,
+            reasons: [
+              ...assessment.reasons,
+              "Staged for deferred approval: an autonomous run prepared this action in full but cannot execute a human-decision action. A human can approve, edit, or reject it in an interactive session.",
+            ],
+            approval_id: jti,
+            held: true,
+            staged: true,
+            // Echo the prepared payload so the approval surface (and a future
+            // edit-then-execute review) has the exact action to act on.
+            resolved_action: resolved,
+            delivery,
+            risk_breakdown,
+            render: previewRender(outcome, assessment.tier, summary, assessment.reasons),
+          };
+        }
 
         return {
           outcome,
@@ -493,7 +602,7 @@ export const governanceTools: ToolMap = {
           summary,
           reasons: assessment.reasons,
           approval_id: jti,
-          confirm_token: token,
+          confirm_token: tokenInfo!.token,
           held: true,
           delivery,
           // Echo the RESOLVED action back. The token is bound to the hash of
@@ -546,6 +655,27 @@ export const governanceTools: ToolMap = {
         throw new Error(
           "Action does not match the previewed action (hash mismatch). The token authorizes a different action."
         );
+      }
+
+      // HARD GATE (clear-time half). An autonomous principal may never clear
+      // a human-decision action. We re-derive the requirement from policy
+      // using ctx.actor (set unforgeably in buildContext), NOT the token's
+      // claim — so a token minted in an interactive preview, or reissued by
+      // approve_action, cannot be replayed by an autonomous runner to clear
+      // a hold. Belt-and-suspenders to preview_action's refusal.
+      if (isAutonomous(ctx)) {
+        const policy = await loadPolicy(ctx);
+        if (resolveOutcome(policy, v.payload.tier) === "hold_for_approval") {
+          await writeAuditLog(ctx, {
+            action: "action_refused",
+            entity_type: "action",
+            entity_id: v.payload.jti,
+            metadata: { tier: v.payload.tier, jti: v.payload.jti, actor: "autonomous", reason: "autonomous_execute_blocked" },
+          });
+          throw new Error(
+            "An autonomous run cannot execute a human-decision action. It must be approved by a human in an interactive session."
+          );
+        }
       }
 
       // Is there a held row for this jti? If so, it must be approved,
@@ -802,33 +932,38 @@ export const governanceTools: ToolMap = {
   },
 
   approve_action: {
-    title: "Approve or Reject a Held Action",
+    title: "Approve, Edit, or Reject a Held Action",
     description:
-      "HUMAN-ONLY TOOL. Approve or reject a held action so the next execute_action call can proceed. " +
-      "Pass approval_id (from list_pending_approvals) or jti (from the Slack notification), your decision " +
-      "('approve' or 'reject'), and approver_id (your user id — must be a human member, not the agent). " +
-      "On approval, returns a fresh confirm_token to pass to execute_action. " +
+      "HUMAN-ONLY TOOL. Decide a held or staged action so the next execute_action call can proceed. " +
+      "Three reviewer moves: approve-as-is (decision 'approve'), edit-then-approve (decision 'approve' WITH edited_action - " +
+      "the server re-classifies the edited payload and re-binds the token to it), or reject (decision 'reject'). " +
+      "Pass approval_id (from list_pending_approvals) or jti (from the notification), your decision, and approver_id " +
+      "(your user id — must be a human member, not the agent). On approval, returns a fresh confirm_token to pass to " +
+      "execute_action; when edited, also returns resolved_action - pass THAT exact object to execute_action. " +
       "AUTONOMOUS AGENTS MUST NOT CALL THIS TOOL. It exists for interactive human sessions only. " +
       "Calling it from a scheduled or autonomous context defeats the approval gate. " +
       "Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({
       approval_id: z.string().optional().describe("UUID of the pending approval (from list_pending_approvals)."),
-      jti: z.string().optional().describe("The jti reference from the Slack notification (alternative to approval_id)."),
+      jti: z.string().optional().describe("The jti reference from the notification (alternative to approval_id)."),
       decision: z.enum(["approve", "reject"]).describe("Your decision on this action."),
       approver_id: z.string().describe("Your user id. Must be a human member — the approver must not be the agent that proposed the action."),
+      edited_action: proposedActionSchema.optional().describe("Optional edited action payload (with decision 'approve'). The server re-classifies it from scratch and re-binds the token; an edit cannot lower the tier past the floor."),
     }),
-    handler: async (ctx: ToolContext, args: { approval_id?: string; jti?: string; decision: "approve" | "reject"; approver_id: string }) => {
+    handler: async (ctx: ToolContext, args: { approval_id?: string; jti?: string; decision: "approve" | "reject"; approver_id: string; edited_action?: ProposedActionInput }) => {
       const result = await approveAction(ctx, args) as {
         success: boolean;
         approval_id: string;
         status: string;
         approver: string;
+        edited?: boolean;
         confirm_token?: string;
+        resolved_action?: ProposedAction;
         note: string;
       };
       const approved = args.decision === "approve";
       const md = approved
-        ? `Approved. Pass the \`confirm_token\` to execute_action to run the held action.\n\n**Ref:** ${args.approval_id ?? args.jti}\n**Approver:** ${args.approver_id}`
+        ? `${result.edited ? "Approved with edits" : "Approved"}. Pass the \`confirm_token\`${result.edited ? " and the returned `resolved_action`" : ""} to execute_action to run the action.\n\n**Ref:** ${args.approval_id ?? args.jti}\n**Approver:** ${args.approver_id}`
         : `Rejected. The held action will not run.\n\n**Ref:** ${args.approval_id ?? args.jti}\n**Approver:** ${args.approver_id}`;
       return {
         ...result,
@@ -851,11 +986,30 @@ export const governanceTools: ToolMap = {
   },
 };
 
+// Governance-control tools an autonomous principal must NOT hold. A
+// description string ("AUTONOMOUS AGENTS MUST NOT CALL THIS") is advisory;
+// withholding them from the tool map is structural. approve_action would
+// let an unattended run self-clear a hold; set_policy / pause_agents would
+// let it lower or disable its own guardrails. Layer 2's execute-time
+// refusal is the backstop even if one were somehow present.
+const AUTONOMOUS_WITHHELD_TOOLS = ["approve_action", "set_policy", "pause_agents"] as const;
+
+/**
+ * The governance tools an autonomous principal is allowed to hold: the full
+ * map minus the control tools above. Exported so the Phase 2 runner and its
+ * tests can reference the exact reduced surface.
+ */
+export const autonomousGovernanceTools: ToolMap = Object.fromEntries(
+  Object.entries(governanceTools).filter(
+    ([name]) => !AUTONOMOUS_WITHHELD_TOOLS.includes(name as (typeof AUTONOMOUS_WITHHELD_TOOLS)[number])
+  )
+);
+
 export function registerGovernanceTools(server: McpServer, ctx: ToolContext): void {
-  // approve_action IS registered here so it is visible in interactive human
-  // sessions (e.g. Cowork). The tool description explicitly forbids autonomous
-  // agents from calling it. The approver_id parameter must be a human member
-  // and is recorded in the audit log, so any self-approval is visible after
-  // the fact via reconcile_actions.
-  registerToolMap(server, governanceTools, ctx);
+  // Principal-aware registration. Interactive sessions (e.g. Cowork) get the
+  // full map, including approve_action so a human can clear a held action.
+  // An autonomous principal gets the reduced map: it cannot approve, set
+  // policy, or pause. The actor is set unforgeably in the context builder.
+  const tools = isAutonomous(ctx) ? autonomousGovernanceTools : governanceTools;
+  registerToolMap(server, tools, ctx);
 }

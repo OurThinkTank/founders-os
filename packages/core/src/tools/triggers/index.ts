@@ -21,9 +21,16 @@ import { registerToolMap, type ToolMap } from "../register.js";
 import type { ToolContext } from "../../types/context.js";
 import type { Render } from "../../types/render.js";
 import { writeAuditLog } from "../audit.js";
-import { fingerprint, changed } from "./dedup.js";
-import { dataEvaluators, DATA_CONDITION_TYPES } from "./conditions.js";
+import { fingerprint } from "./dedup.js";
+import { DATA_CONDITION_TYPES } from "./conditions.js";
 import { buildConnectorCheck, CONNECTOR_CONDITION_TYPES, type ConnectorCheck } from "./connector.js";
+import {
+  TRIGGER_SELECT,
+  claimFire,
+  resolvedActionRef,
+  evaluateDataTriggers,
+  type TriggerRow,
+} from "./evaluate.js";
 
 const ALL_CONDITION_TYPES = [...DATA_CONDITION_TYPES, ...CONNECTOR_CONDITION_TYPES];
 
@@ -72,75 +79,10 @@ async function validateTriggerConfig(ctx: ToolContext, cfg: TriggerConfig): Prom
   }
 }
 
-// ── Fire-claim (atomic conditional UPDATE) ─────────────────
-// Claims the fire for one trigger by moving last_state to the new
-// fingerprint ONLY when it differs (IS DISTINCT FROM, including the
-// first-ever evaluation where last_state is null). Two overlapping
-// ticks therefore serialize: the first claims and the second sees the
-// fingerprint already stored and does nothing. last_fired_at is bumped
-// only when the condition actually matched, so a transition to
-// "no longer matching" updates state (so re-matching re-fires) without
-// recording a fire. A pg advisory lock keyed on company_id is the
-// documented hardening follow-up; the conditional update already gives
-// single-fire-per-state without it.
-
-async function claimFire(
-  ctx: ToolContext,
-  triggerId: string,
-  fp: string,
-  matched: boolean
-): Promise<boolean> {
-  const patch: Record<string, unknown> = { last_state: fp };
-  if (matched) patch.last_fired_at = new Date().toISOString();
-  const { data, error } = await ctx.db
-    .from("triggers")
-    .update(patch)
-    .eq("company_id", ctx.companyId)
-    .eq("id", triggerId)
-    // IS DISTINCT FROM: matches when last_state is null OR differs.
-    .or(`last_state.is.null,last_state.neq.${fp}`)
-    .select("id")
-    .maybeSingle();
-  if (error) throw new Error(`Fire-claim failed for trigger ${triggerId}: ${error.message}`);
-  return Boolean(data);
-}
-
-// ── Resolved-action reference for a fired trigger ──────────
-
-interface TriggerRow {
-  id: string;
-  name: string;
-  condition_source: "data" | "connector";
-  condition_type: string;
-  connector: string | null;
-  params: Record<string, unknown> | null;
-  action_type: string;
-  playbook_id: string | null;
-  action_params: Record<string, unknown> | null;
-  last_state: string | null;
-  created_by: string;
-  enabled: boolean;
-}
-
-function resolvedActionRef(t: TriggerRow, brief: string) {
-  return {
-    trigger_id: t.id,
-    name: t.name,
-    condition_type: t.condition_type,
-    brief,
-    action: {
-      action_type: t.action_type,
-      playbook_id: t.playbook_id,
-      // Templated params; resolved + classified inside preview_action.
-      action_params: t.action_params ?? {},
-    },
-    next_step:
-      "Route this action through preview_action before performing it; if held, wait for a human approval.",
-  };
-}
-
-const TRIGGER_SELECT =
-  "id, name, condition_source, condition_type, connector, params, action_type, playbook_id, action_params, last_state, created_by, enabled";
+// Detection internals (TRIGGER_SELECT, claimFire, resolvedActionRef,
+// TriggerRow) live in ./evaluate.ts so the same implementation backs both
+// this tool and the headless `founders-os-tick detect` CLI. They are
+// imported above.
 
 // ── Render helpers ─────────────────────────────────────────
 
@@ -353,60 +295,21 @@ export const triggerTools: ToolMap = {
       dry_evaluate: z.boolean().optional().describe("Evaluate without fire-claiming (no state writes). Default false."),
     }),
     handler: async (ctx: ToolContext, { condition_types, dry_evaluate = false }: { condition_types?: string[]; dry_evaluate?: boolean }) => {
-      let q = ctx.db
-        .from("triggers")
-        .select(TRIGGER_SELECT)
-        .eq("company_id", ctx.companyId)
-        .eq("enabled", true)
-        .is("deleted_at", null);
-      if (condition_types && condition_types.length > 0) q = q.in("condition_type", condition_types);
-      const { data, error } = await q;
-      if (error) throw new Error(`Failed to load triggers: ${error.message}`);
-      const triggers = (data ?? []) as TriggerRow[];
+      // Detection is the shared core (also used by the detect tick). The
+      // tool does not write the inbox — it returns fires in its response.
+      const { evaluated, fired, connectorTriggers, errors } = await evaluateDataTriggers(ctx, {
+        conditionTypes: condition_types,
+        dryEvaluate: dry_evaluate,
+        writeInbox: false,
+      });
 
-      const fired: ReturnType<typeof resolvedActionRef>[] = [];
+      // Build connector checks from the enabled connector-source triggers.
+      // A misconfigured connector check is isolated, not fatal — same
+      // contract as the data loop.
       const connector_checks: ConnectorCheck[] = [];
-      const errors: Array<{ trigger_id: string; name: string; error: string }> = [];
-      let evaluated = 0;
-
-      // Per-trigger isolation: one bad trigger (a DB hiccup, a misconfigured
-      // connector condition, an unknown data condition) must not abort the
-      // whole tick and starve every other watcher. Failures are collected
-      // and surfaced, not thrown.
-      for (const t of triggers) {
+      for (const t of connectorTriggers) {
         try {
-          if (t.condition_source === "connector") {
-            connector_checks.push(buildConnectorCheck(t));
-            continue;
-          }
-          const evaluator = dataEvaluators[t.condition_type];
-          if (!evaluator) {
-            errors.push({
-              trigger_id: t.id,
-              name: t.name,
-              error: `No data evaluator for condition_type "${t.condition_type}"; the trigger is misconfigured and never fires.`,
-            });
-            continue;
-          }
-          evaluated++;
-          const result = await evaluator(ctx, t.params ?? {});
-          const fp = fingerprint(result.rows.map((r) => r.id), result.state_field);
-
-          if (dry_evaluate) {
-            if (result.matched && changed(t.last_state, fp)) fired.push(resolvedActionRef(t, result.brief));
-            continue;
-          }
-
-          const claimed = await claimFire(ctx, t.id, fp, result.matched);
-          if (result.matched && claimed) {
-            await writeAuditLog(ctx, {
-              action: "trigger_fired",
-              entity_type: "trigger",
-              entity_id: t.id,
-              metadata: { condition_type: t.condition_type, brief: result.brief, source: "data" },
-            });
-            fired.push(resolvedActionRef(t, result.brief));
-          }
+          connector_checks.push(buildConnectorCheck(t));
         } catch (e) {
           errors.push({ trigger_id: t.id, name: t.name, error: e instanceof Error ? e.message : "unknown error" });
         }
@@ -483,6 +386,47 @@ export const triggerTools: ToolMap = {
         fired: false,
         trigger_id: trig.id,
         reason: !matched ? "No matching rows; recorded the all-clear." : "No change since the last fire (deduped).",
+      };
+    },
+  },
+
+  list_trigger_fires: {
+    title: "List Trigger Fires",
+    description:
+      "Drain the trigger_fires inbox: the watches that fired while you were away, written by the headless detect tick. Each row carries the brief and the resolved action to route through preview_action. Defaults to pending (unhandled) fires; pass status to filter. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      status: z.enum(["pending", "acted", "dismissed", "all"]).optional().describe("Filter by status. Default 'pending'."),
+    }),
+    handler: async (ctx: ToolContext, { status = "pending" }: { status?: "pending" | "acted" | "dismissed" | "all" }) => {
+      let q = ctx.db
+        .from("trigger_fires")
+        .select("id, trigger_id, condition_type, brief, action, status, created_at")
+        .eq("company_id", ctx.companyId)
+        .order("created_at", { ascending: false });
+      if (status !== "all") q = q.eq("status", status);
+      const { data, error } = await q;
+      if (error) throw new Error(`Failed to list trigger fires: ${error.message}`);
+      const rows = (data ?? []) as Array<Record<string, unknown>>;
+
+      const md = rows.length
+        ? "| Status | What fired | Next |\n|---|---|---|\n" +
+          rows.map((r) => `| ${r.status} | ${r.brief} | route through preview_action |`).join("\n")
+        : "Inbox empty. Nothing fired while you were away.";
+
+      return {
+        fires: rows,
+        count: rows.length,
+        render: {
+          tier_1: {
+            format_hint: "status_groups",
+            instructions: {
+              scope: "Show what fired while away, each with its brief and the action to route through preview_action.",
+              format: "A list of fires with the brief as the headline and the resolved action as a next-step line. Keep it compact.",
+              forbidden: "Do not perform any fired action directly; route each through preview_action first.",
+            },
+          },
+          tier_3: { markdown: md },
+        } satisfies Render,
       };
     },
   },

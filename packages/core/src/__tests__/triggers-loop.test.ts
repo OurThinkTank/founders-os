@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { triggerTools } from "../tools/triggers/index.js";
+import { evaluateDataTriggers } from "../tools/triggers/evaluate.js";
 import type { ToolContext } from "../types/context.js";
 
 type Row = Record<string, unknown>;
@@ -72,6 +73,20 @@ class FakeQuery {
     return this;
   }
 
+  // Terminal upsert (awaited directly): replace a row matching the
+  // onConflict columns, else insert. Models ctx.db.from(t).upsert(row, opts).
+  async upsert(p: Row, opts?: { onConflict?: string }): Promise<{ data: Row | null; error: null }> {
+    const cols = (opts?.onConflict ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const rows = this.rows();
+    if (cols.length) {
+      const existing = rows.find((r) => cols.every((c) => r[c] === p[c]));
+      if (existing) { Object.assign(existing, p); return { data: { ...existing }, error: null }; }
+    }
+    const withId = { id: p.id ?? `gen-${Math.random().toString(36).slice(2)}`, ...p };
+    rows.push(withId);
+    return { data: { ...withId }, error: null };
+  }
+
   async maybeSingle(): Promise<{ data: Row | null; error: null }> {
     if (this.op === "insert") return { data: this.inserted[0] ? { ...this.inserted[0] } : null, error: null };
     if (this.op === "update") {
@@ -115,6 +130,8 @@ const evaluate = (ctx: ToolContext, params: unknown = {}) =>
   (triggerTools.evaluate_triggers.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
 const report = (ctx: ToolContext, params: unknown) =>
   (triggerTools.report_trigger_observation.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
+const listFires = (ctx: ToolContext, params: unknown = {}) =>
+  (triggerTools.list_trigger_fires.handler as (c: ToolContext, p: unknown) => Promise<any>)(ctx, params);
 
 function daysAgo(n: number): string {
   return new Date(Date.now() - n * 86_400_000).toISOString();
@@ -176,6 +193,56 @@ describe("data loop — stuck_task fires once, dedups, re-fires on worsening, re
     expect(dry.fired_count).toBe(1);
     // last_state was not written, so a real evaluate still fires.
     expect((await evaluate(ctx)).fired_count).toBe(1);
+  });
+});
+
+describe("detect inbox — evaluateDataTriggers writeInbox upserts trigger_fires", () => {
+  let store: Map<string, Row[]>;
+  let ctx: ToolContext;
+
+  beforeEach(() => {
+    store = new Map<string, Row[]>();
+    store.set("triggers", [
+      {
+        id: "trg-od", company_id: "default", name: "Overdue tasks",
+        condition_source: "data", condition_type: "overdue_task", connector: null,
+        params: {}, action_type: "notify", playbook_id: null, action_params: { channel: "#ops" },
+        last_state: null, last_fired_at: null, created_by: "agent", enabled: true, deleted_at: null,
+      },
+    ]);
+    store.set("tasks", [
+      { id: "task-od", company_id: "default", status: "todo", due_date: "2020-01-01", deleted_at: null },
+    ]);
+    ctx = makeCtx(store);
+  });
+
+  it("writes one pending inbox row when a data trigger fires", async () => {
+    const res = await evaluateDataTriggers(ctx, { writeInbox: true });
+    expect(res.fired.length).toBe(1);
+    const inbox = store.get("trigger_fires") ?? [];
+    expect(inbox.length).toBe(1);
+    expect(inbox[0].status).toBe("pending");
+    expect(inbox[0].trigger_id).toBe("trg-od");
+    expect(inbox[0].condition_type).toBe("overdue_task");
+    expect(typeof inbox[0].fingerprint).toBe("string");
+  });
+
+  it("does not stack duplicates: an unchanged re-run leaves one row", async () => {
+    await evaluateDataTriggers(ctx, { writeInbox: true });
+    await evaluateDataTriggers(ctx, { writeInbox: true }); // deduped -> no fire -> no upsert
+    expect((store.get("trigger_fires") ?? []).length).toBe(1);
+  });
+
+  it("does not write the inbox when writeInbox is false (the in-session tool path)", async () => {
+    await evaluateDataTriggers(ctx, { writeInbox: false });
+    expect(store.get("trigger_fires") ?? []).toEqual([]);
+  });
+
+  it("list_trigger_fires surfaces the pending fire", async () => {
+    await evaluateDataTriggers(ctx, { writeInbox: true });
+    const listed = await listFires(ctx, {});
+    expect(listed.count).toBe(1);
+    expect(String(listed.fires[0].brief)).toContain("overdue");
   });
 });
 

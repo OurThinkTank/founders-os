@@ -20,7 +20,7 @@ export type {
 } from "./tools/register.js";
 
 // ---- Context construction + Supabase ----
-export { buildContext, readEmbeddingConfigFromEnv } from "./context.js";
+export { buildContext, buildAutonomousContext, readEmbeddingConfigFromEnv } from "./context.js";
 export { createServiceClient } from "./supabase.js";
 
 // ---- Rendering contract ----
@@ -53,7 +53,9 @@ export type {
   ToolContext,
   EmbeddingConfig,
   IdentityMode,
+  Actor,
 } from "./types/context.js";
+export { isAutonomous } from "./types/context.js";
 export type {
   Render,
   FormatHint,
@@ -76,6 +78,14 @@ export { surfaceTools } from "./tools/surfaces/index.js";
 export { playbookTools } from "./tools/playbooks/index.js";
 export { governanceTools } from "./tools/governance/index.js";
 export { triggerTools } from "./tools/triggers/index.js";
+export { evaluateDataTriggers } from "./tools/triggers/evaluate.js";
+export { runHoldOnly } from "./tools/run/hold-only.js";
+export type { HoldOnlyResult } from "./tools/run/hold-only.js";
+export type {
+  DataFire,
+  EvaluateDataResult,
+  EvaluateDataOptions,
+} from "./tools/triggers/evaluate.js";
 export { projectTools } from "./tools/projects/index.js";
 export { restoreTools } from "./tools/restore.js";
 export { crmTools } from "./tools/crm/index.js";

@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import {
   governanceTools,
+  autonomousGovernanceTools,
   approveAction,
   bulkApproveActions,
   registerGovernanceTools,
@@ -516,5 +517,205 @@ describe("approver-identity separation (the one real lever)", () => {
     await expect(
       approveAction(ctx, { approval_id: "any", decision: "approve", approver_id: "" })
     ).rejects.toThrow(/approver/i);
+  });
+});
+
+// ── Autonomous hard gate ───────────────────────────────────
+// An autonomous (unattended) principal may never clear a human-decision
+// action. preview refuses it (no token), execute re-checks ctx.actor at
+// clear time, and the autonomous tool map withholds the control tools.
+
+const makeAutonomousCtx = (): ToolContext => ({
+  ...makeCtx(),
+  actor: { kind: "autonomous", runId: "run-1" },
+});
+
+const externalRead = {
+  action: { kind: "external", connector: "github", action: "get_issue", params: { id: 1 }, summary: "Read an issue" },
+};
+const externalDestructive = {
+  action: { kind: "external", connector: "github", action: "delete_repo", params: { repo: "x" }, summary: "Delete a repo" },
+};
+
+describe("autonomous hard gate — preview stages hold tiers for deferred approval", () => {
+  it("stages an external_write for an autonomous principal: no token, prepared payload queued", async () => {
+    const ctx = makeAutonomousCtx();
+    const res = await preview(ctx, externalWrite);
+    expect(res.outcome).toBe("staged_for_deferred_approval");
+    expect(res.staged).toBe(true);
+    expect(res.confirm_token).toBeUndefined();
+    // Queued for a human to approve/edit/reject later — a pending row exists,
+    // and the full prepared action is echoed for the review surface.
+    expect(res.approval_id).toBeTruthy();
+    expect(res.resolved_action).toBeTruthy();
+  });
+
+  it("stages a destructive action for an autonomous principal", async () => {
+    const res = await preview(makeAutonomousCtx(), externalDestructive);
+    expect(res.outcome).toBe("staged_for_deferred_approval");
+    expect(res.confirm_token).toBeUndefined();
+  });
+
+  it("does NOT stage a read action for an autonomous principal (only hold tiers stage)", async () => {
+    const res = await preview(makeAutonomousCtx(), externalRead);
+    expect(res.outcome).toBe("allow");
+    expect(res.confirm_token).toBeTruthy();
+  });
+});
+
+describe("autonomous hard gate — execute re-checks ctx.actor at clear time", () => {
+  it("refuses to clear a hold-tier token presented by an autonomous principal", async () => {
+    // A token legitimately minted in an interactive session...
+    const human = makeCtx();
+    const held = await preview(human, externalWrite);
+    expect(held.outcome).toBe("hold_for_approval");
+    // ...cannot be replayed by an autonomous runner to clear the hold.
+    const auto = makeAutonomousCtx();
+    await expect(
+      execute(auto, { confirm_token: held.confirm_token, action: held.resolved_action })
+    ).rejects.toThrow(/autonomous/i);
+  });
+
+  it("still clears an allow-tier token for an autonomous principal (gate only blocks holds)", async () => {
+    const human = makeCtx();
+    const allowed = await preview(human, externalRead);
+    expect(allowed.outcome).toBe("allow");
+    const res = await execute(makeAutonomousCtx(), {
+      confirm_token: allowed.confirm_token,
+      action: allowed.resolved_action,
+    });
+    expect(res.cleared).toBe(true);
+  });
+});
+
+describe("autonomous hard gate — deferred-approval round trip", () => {
+  it("an autonomous run stages a hold; a human then approves and executes it via the H2 path", async () => {
+    // 1. Autonomous run prepares + stages the action (no token, no execution).
+    const auto = makeAutonomousCtx();
+    const staged = await preview(auto, externalWrite);
+    expect(staged.outcome).toBe("staged_for_deferred_approval");
+    expect(staged.confirm_token).toBeUndefined();
+
+    // 2. A human, in an interactive session sharing the same store, approves it.
+    //    approver_id must be a human and is recorded in the audit trail.
+    const human: ToolContext = { ...auto, actor: { kind: "interactive", userId: "doug" } };
+    const decision = (await approveAction(human, {
+      approval_id: staged.approval_id,
+      decision: "approve",
+      approver_id: "doug@ourthinktank.com",
+    })) as { status: string; confirm_token?: string };
+    expect(decision.status).toBe("approved");
+    expect(decision.confirm_token).toBeTruthy();
+
+    // 3. The freshly-issued token clears under the interactive principal.
+    const cleared = await execute(human, {
+      confirm_token: decision.confirm_token,
+      action: staged.resolved_action,
+    });
+    expect(cleared.cleared).toBe(true);
+  });
+});
+
+describe("autonomous hard gate — reduced tool map", () => {
+  it("the autonomous tool map withholds approve_action, set_policy, and pause_agents", () => {
+    for (const t of ["approve_action", "set_policy", "pause_agents"]) {
+      expect(Object.keys(governanceTools)).toContain(t);          // interactive has them
+      expect(Object.keys(autonomousGovernanceTools)).not.toContain(t); // autonomous does not
+    }
+    // It keeps the read/queue tools the runner legitimately needs.
+    expect(Object.keys(autonomousGovernanceTools)).toContain("preview_action");
+    expect(Object.keys(autonomousGovernanceTools)).toContain("execute_action");
+    expect(Object.keys(autonomousGovernanceTools)).toContain("list_pending_approvals");
+  });
+
+  it("registerGovernanceTools registers the reduced map for an autonomous principal", () => {
+    const registered: string[] = [];
+    const fakeServer = { registerTool: (name: string) => registered.push(name) } as never;
+    registerGovernanceTools(fakeServer, makeAutonomousCtx());
+    expect(registered).toContain("preview_action");
+    expect(registered).toContain("execute_action");
+    expect(registered).not.toContain("approve_action");
+    expect(registered).not.toContain("set_policy");
+    expect(registered).not.toContain("pause_agents");
+  });
+});
+
+describe("deferred approval — edit-then-execute reviewer path", () => {
+  const auditActions = async (ctx: ToolContext): Promise<string[]> => {
+    const r = (await (ctx.db.from("audit_log").select("action") as unknown as Promise<{ data: Array<{ action: string }> }>));
+    return (r.data ?? []).map((x) => x.action);
+  };
+
+  it("a human edits the staged payload, the server re-binds, and the edited action executes", async () => {
+    const auto = makeAutonomousCtx();
+    const staged = await preview(auto, externalWrite);
+    expect(staged.outcome).toBe("staged_for_deferred_approval");
+
+    const human: ToolContext = { ...auto, actor: { kind: "interactive", userId: "doug" } };
+    const edited = {
+      kind: "external", connector: "github", action: "create_issue",
+      params: { title: "Bug (reworded by reviewer)" }, summary: "Open a reworded issue",
+    };
+    const decision = (await approveAction(human, {
+      approval_id: staged.approval_id,
+      decision: "approve",
+      approver_id: "doug@ourthinktank.com",
+      edited_action: edited,
+    })) as { edited?: boolean; confirm_token?: string; resolved_action?: unknown };
+
+    expect(decision.edited).toBe(true);
+    expect(decision.confirm_token).toBeTruthy();
+    expect(decision.resolved_action).toBeTruthy();
+
+    // The edited action (echoed back) clears; the token is bound to it.
+    const cleared = await execute(human, { confirm_token: decision.confirm_token, action: decision.resolved_action });
+    expect(cleared.cleared).toBe(true);
+
+    // approve / edit are both written to the audit trail.
+    const actions = await auditActions(human);
+    expect(actions).toContain("action_staged");
+    expect(actions).toContain("action_edited");
+    expect(actions).toContain("action_approved");
+  });
+
+  it("the token binds to the EDITED action: executing the original is refused (hash mismatch)", async () => {
+    const auto = makeAutonomousCtx();
+    const staged = await preview(auto, externalWrite);
+    const human: ToolContext = { ...auto, actor: { kind: "interactive", userId: "doug" } };
+    const decision = (await approveAction(human, {
+      approval_id: staged.approval_id,
+      decision: "approve",
+      approver_id: "doug",
+      edited_action: { kind: "external", connector: "github", action: "create_issue", params: { title: "Different" }, summary: "Different" },
+    })) as { confirm_token?: string };
+    // Echo the ORIGINAL staged action, not the edited one.
+    await expect(
+      execute(human, { confirm_token: decision.confirm_token, action: staged.resolved_action })
+    ).rejects.toThrow(/match|hash/i);
+  });
+
+  it("re-classifies the edited payload: an edit that targets a private host is refused (SSRF)", async () => {
+    const auto = makeAutonomousCtx();
+    const staged = await preview(auto, externalWrite);
+    const human: ToolContext = { ...auto, actor: { kind: "interactive", userId: "doug" } };
+    await expect(
+      approveAction(human, {
+        approval_id: staged.approval_id,
+        decision: "approve",
+        approver_id: "doug",
+        edited_action: { kind: "external", connector: "github", action: "create_issue", params: { url: "http://169.254.169.254/latest/meta-data" }, summary: "x" },
+      })
+    ).rejects.toThrow(/refused/i);
+  });
+
+  it("rejecting writes action_rejected and issues no token", async () => {
+    const auto = makeAutonomousCtx();
+    const staged = await preview(auto, externalWrite);
+    const human: ToolContext = { ...auto, actor: { kind: "interactive", userId: "doug" } };
+    const decision = (await approveAction(human, {
+      approval_id: staged.approval_id, decision: "reject", approver_id: "doug",
+    })) as { confirm_token?: string };
+    expect(decision.confirm_token).toBeUndefined();
+    expect(await auditActions(human)).toContain("action_rejected");
   });
 });

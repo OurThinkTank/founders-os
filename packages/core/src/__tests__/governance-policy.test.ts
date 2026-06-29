@@ -36,6 +36,39 @@ describe("resolveOutcome — normal mapping", () => {
   });
 });
 
+describe("resolveOutcome — autonomous hard gate (read-time half)", () => {
+  it("stages every hold-tier outcome for deferred approval for an autonomous principal", () => {
+    const p = policy();
+    // external_write (default hold) and both red tiers all stage, never clear.
+    expect(resolveOutcome(p, "external_write", { autonomous: true })).toBe("staged_for_deferred_approval");
+    expect(resolveOutcome(p, "destructive", { autonomous: true })).toBe("staged_for_deferred_approval");
+    expect(resolveOutcome(p, "exfiltration", { autonomous: true })).toBe("staged_for_deferred_approval");
+  });
+
+  it("leaves non-hold tiers alone for an autonomous principal", () => {
+    const p = policy();
+    expect(resolveOutcome(p, "read", { autonomous: true })).toBe("allow");
+    expect(resolveOutcome(p, "native_create", { autonomous: true })).toBe("allow_with_log");
+  });
+
+  it("stages everything (even read) for an autonomous principal under dry_run", () => {
+    const p = policy({ dry_run: true });
+    expect(resolveOutcome(p, "read", { autonomous: true })).toBe("staged_for_deferred_approval");
+    expect(resolveOutcome(p, "external_write", { autonomous: true })).toBe("staged_for_deferred_approval");
+  });
+
+  it("paused still wins over the autonomous gate (kill switch is absolute)", () => {
+    const p = policy({ paused: true });
+    expect(resolveOutcome(p, "external_write", { autonomous: true })).toBe("paused");
+  });
+
+  it("is unchanged for an interactive principal (omitted or explicit)", () => {
+    const p = policy();
+    expect(resolveOutcome(p, "external_write")).toBe("hold_for_approval");
+    expect(resolveOutcome(p, "external_write", { autonomous: false })).toBe("hold_for_approval");
+  });
+});
+
 describe("resolveOutcome — red-tier floor (read-time defense)", () => {
   it("forces hold even if a row tried to lower a red tier", () => {
     const p = policy({
