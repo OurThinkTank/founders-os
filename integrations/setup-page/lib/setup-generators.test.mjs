@@ -3,9 +3,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const gen = require("./setup-generators.js");
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SCHED = path.resolve(__dirname, "..", "..", "scheduler");
 
 const ENV = {
   SUPABASE_URL: "https://abc.supabase.co",
@@ -87,10 +93,33 @@ test("launchd/systemd units never ship a tilde path (launchd/systemd don't expan
   assert.match(gen.buildSystemdService({ wrapperPathUnix: "/Users/me/.local/bin/foundersos-tick.sh" }), /ExecStart=\/Users\/me\//);
 });
 
-test("buildSchedulerBundle returns all six artifacts", () => {
+test("buildSchedulerBundle returns all artifacts incl. wrapper bodies", () => {
   const b = gen.buildSchedulerBundle(ENV, {});
-  for (const k of ["envFile", "launchd", "systemdService", "systemdTimer", "cron", "taskScheduler"]) {
+  for (const k of ["envFile", "launchd", "systemdService", "systemdTimer", "cron", "taskScheduler", "wrapperSh", "wrapperCmd"]) {
     assert.ok(typeof b[k] === "string" && b[k].length > 0, `${k} present`);
   }
   assert.match(b.envFile, /SUPABASE_SECRET_KEY=sb_secret_xyz/);
+});
+
+// Drift guard: the wizard ships the wrapper as a direct download, so the
+// module's embedded copy MUST equal the canonical integrations/scheduler files
+// byte-for-byte. If a wrapper file changes, re-run
+// `node tools/sync-wrapper-bodies.mjs` to refresh the literals - this test
+// fails loudly until you do, so the download can never serve a stale wrapper.
+test("tickWrapperSh matches integrations/scheduler/foundersos-tick.sh exactly", () => {
+  const onDisk = fs.readFileSync(path.join(SCHED, "foundersos-tick.sh"), "utf-8");
+  assert.equal(gen.tickWrapperSh(), onDisk,
+    "WRAPPER_SH is stale - run `node tools/sync-wrapper-bodies.mjs`");
+});
+
+test("tickWrapperCmd matches integrations/scheduler/foundersos-tick.cmd exactly", () => {
+  const onDisk = fs.readFileSync(path.join(SCHED, "foundersos-tick.cmd"), "utf-8");
+  assert.equal(gen.tickWrapperCmd(), onDisk,
+    "WRAPPER_CMD is stale - run `node tools/sync-wrapper-bodies.mjs`");
+});
+
+test("embedded wrapper bodies look like the real scripts (sanity)", () => {
+  assert.match(gen.tickWrapperSh(), /founders-os-tick/);
+  assert.match(gen.tickWrapperSh(), /run --hold-only/);
+  assert.match(gen.tickWrapperCmd(), /@echo off/);
 });

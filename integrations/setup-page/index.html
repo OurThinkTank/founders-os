@@ -628,7 +628,7 @@ select{cursor:pointer;appearance:none;
         <div class="install-steps-title">What this is</div>
         <ol>
           <li>The tick is a small scheduled job that checks your watches on a cadence and stages anything that fires for your review. It performs nothing on its own - staged items wait for you.</li>
-          <li>Download the <strong>tick wrapper</strong> for your OS from <a href="https://github.com/OurThinkTank/founders-os/tree/main/integrations/scheduler">integrations/scheduler</a>, save it to a real <strong>absolute</strong> path (e.g. <code>/Users/you/.local/bin/foundersos-tick.sh</code>), and make it executable (<code>chmod +x</code>). Enter that same absolute path in the box below. The wrapper runs <code>detect</code> then <code>run --hold-only</code>.</li>
+          <li>Download the <strong>tick wrapper</strong> for your OS with the button below (or grab it from <a href="https://github.com/OurThinkTank/founders-os/tree/main/integrations/scheduler">integrations/scheduler</a>), save it to a real <strong>absolute</strong> path (e.g. <code>/Users/you/.local/bin/foundersos-tick.sh</code>), and make it executable (<code>chmod +x</code>). Enter that same absolute path in the box below. The wrapper runs <code>detect</code> then <code>run --hold-only</code>.</li>
           <li>Save the env file below to <code>~/.config/founders-os/foundersos-tick.env</code> (create the folder first: <code>mkdir -p ~/.config/founders-os</code>). The wrapper reads your credentials from there - scheduled jobs don't see your shell profile.</li>
           <li>Install the scheduler unit below for your OS, then register it with the one-time command shown.</li>
         </ol>
@@ -647,6 +647,12 @@ select{cursor:pointer;appearance:none;
           <option value="daily">Daily (6am)</option>
         </select>
       </div>
+      <p class="install-note" style="margin-top:16px"><strong>0. Tick wrapper</strong> - download the script for the OS you picked, save it to an absolute path, then (macOS/Linux) <code>chmod +x</code> it:</p>
+      <div class="output-actions">
+        <button class="btn btn-primary" onclick="downloadSchedWrapper()" id="btn-sched-wrapper">Download wrapper</button>
+        <span class="copied-toast" id="toast-sched-wrapper-download">Downloaded!</span>
+      </div>
+
       <div class="output-actions" style="align-items:center;gap:8px;flex-wrap:wrap">
         <label for="schedWrapperPath"><strong>Absolute path where you saved the wrapper:</strong></label>
         <input id="schedWrapperPath" type="text" oninput="renderScheduler()"
@@ -1203,6 +1209,18 @@ function renderScheduler() {
   document.getElementById('schedUnitCode').textContent = unit;
   document.getElementById('schedUnitWhere').textContent = where;
   document.getElementById('schedInstallCode').textContent = install;
+
+  var wrapBtn = document.getElementById('btn-sched-wrapper');
+  if (wrapBtn) wrapBtn.textContent = 'Download ' + (os === 'windows' ? 'foundersos-tick.cmd' : 'foundersos-tick.sh');
+}
+
+function downloadSchedWrapper() {
+  if (!_schedBundle) return;
+  var isWin = document.getElementById('schedOs').value === 'windows';
+  var name = isWin ? 'foundersos-tick.cmd' : 'foundersos-tick.sh';
+  var text = isWin ? _schedBundle.wrapperCmd : _schedBundle.wrapperSh;
+  triggerDownload(new Blob([text], { type: 'text/plain' }), name);
+  flashToast('toast-sched-wrapper-download');
 }
 
 function downloadSchedEnv() {
