@@ -7,7 +7,7 @@
 // ============================================================
 
 import { describe, it, expect } from "vitest";
-import { cascadeTriggersForEntity } from "../tools/triggers/cleanup.js";
+import { cascadeTriggersForEntity, dismissFiresForTriggers } from "../tools/triggers/cleanup.js";
 import { triggerTools } from "../tools/triggers/index.js";
 import type { ToolContext } from "../types/context.js";
 
@@ -23,6 +23,7 @@ class FakeQuery {
   private matched(): Row[] { return this.rows().filter((r) => this.filters.every((f) => f(r))); }
   select(_c?: string): this { if (this.op === "select") this.op = "select"; return this; }
   eq(c: string, v: unknown): this { this.filters.push((r) => r[c] === v); return this; }
+  in(c: string, vs: unknown[]): this { this.filters.push((r) => vs.includes(r[c])); return this; }
   is(c: string, v: null): this { this.filters.push((r) => (r[c] ?? null) === v); return this; }
   update(p: Row): this { this.op = "update"; this.patch = p; return this; }
   insert(p: Row): this { this.op = "insert"; const row = { id: p.id ?? `gen-${Math.random().toString(36).slice(2)}`, ...p }; this.rows().push(row); this.inserted.push(row); return this; }
@@ -70,6 +71,64 @@ describe("cascadeTriggersForEntity", () => {
   it("is a no-op (returns 0) when nothing is bound to the entity", async () => {
     const store = new Map<string, Row[]>([["triggers", []]]);
     expect(await cascadeTriggersForEntity(ctxWith(store), "playbook_run", "run-x")).toBe(0);
+  });
+
+  it("dismisses the removed triggers' pending inbox fires, leaving other watches' fires", async () => {
+    const store = new Map<string, Row[]>([
+      ["triggers", [
+        { id: "t1", company_id: "default", bound_entity_type: "customer", bound_entity_id: "cust-1", enabled: true, deleted_at: null },
+        { id: "t3", company_id: "default", bound_entity_type: "customer", bound_entity_id: "cust-2", enabled: true, deleted_at: null },
+      ]],
+      ["trigger_fires", [
+        { id: "f1", company_id: "default", trigger_id: "t1", status: "pending" },
+        { id: "f3", company_id: "default", trigger_id: "t3", status: "pending" },
+      ]],
+    ]);
+    const ctx = ctxWith(store);
+
+    await cascadeTriggersForEntity(ctx, "customer", "cust-1");
+
+    const fires = store.get("trigger_fires")!;
+    expect(fires.find((f) => f.id === "f1")!.status).toBe("dismissed"); // removed watch's fire cleared
+    expect(fires.find((f) => f.id === "f3")!.status).toBe("pending");   // other watch untouched
+  });
+});
+
+describe("dismissFiresForTriggers", () => {
+  it("dismisses only pending fires for the given triggers and is a no-op on empty input", async () => {
+    const store = new Map<string, Row[]>([["trigger_fires", [
+      { id: "f1", company_id: "default", trigger_id: "t1", status: "pending" },
+      { id: "f2", company_id: "default", trigger_id: "t1", status: "acted" },
+      { id: "f3", company_id: "default", trigger_id: "t2", status: "pending" },
+    ]]]);
+    const ctx = ctxWith(store);
+
+    expect(await dismissFiresForTriggers(ctx, [])).toBe(0);
+
+    const n = await dismissFiresForTriggers(ctx, ["t1"]);
+    expect(n).toBe(1); // only the pending f1
+    const fires = store.get("trigger_fires")!;
+    expect(fires.find((f) => f.id === "f1")!.status).toBe("dismissed");
+    expect(fires.find((f) => f.id === "f1")!.acted_by).toBe("trigger-removed");
+    expect(fires.find((f) => f.id === "f2")!.status).toBe("acted");   // already-acted untouched
+    expect(fires.find((f) => f.id === "f3")!.status).toBe("pending"); // other trigger untouched
+  });
+});
+
+describe("delete_trigger clears its inbox fires", () => {
+  it("soft-deletes the trigger and dismisses its pending fire", async () => {
+    const store = new Map<string, Row[]>([
+      ["triggers", [{ id: "t1", company_id: "default", enabled: true, deleted_at: null }]],
+      ["trigger_fires", [{ id: "f1", company_id: "default", trigger_id: "t1", status: "pending" }]],
+    ]);
+    const ctx = ctxWith(store);
+    const del = triggerTools.delete_trigger.handler as (c: ToolContext, p: unknown) => Promise<any>;
+
+    const res = await del(ctx, { trigger_id: "t1" });
+    expect(res.success).toBe(true);
+    expect(res.dismissed_fires).toBe(1);
+    expect(store.get("triggers")!.find((t) => t.id === "t1")!.deleted_at).not.toBeNull();
+    expect(store.get("trigger_fires")!.find((f) => f.id === "f1")!.status).toBe("dismissed");
   });
 });
 

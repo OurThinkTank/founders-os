@@ -22,6 +22,7 @@ import type { ToolContext } from "../../types/context.js";
 import type { Render } from "../../types/render.js";
 import { writeAuditLog } from "../audit.js";
 import { fingerprint } from "./dedup.js";
+import { dismissFiresForTriggers } from "./cleanup.js";
 import { DATA_CONDITION_TYPES } from "./conditions.js";
 import { buildConnectorCheck, CONNECTOR_CONDITION_TYPES, type ConnectorCheck } from "./connector.js";
 import {
@@ -282,7 +283,11 @@ export const triggerTools: ToolMap = {
         .maybeSingle();
       if (error) throw new Error(`Failed to delete trigger: ${error.message}`);
       if (!data) throw new Error(`Trigger ${trigger_id} not found or already deleted.`);
-      return { success: true, deleted: trigger_id };
+      // A soft-delete does not cascade to trigger_fires (FK cascade is
+      // hard-delete only), so dismiss any pending inbox rows for this watch
+      // to avoid orphans surfacing in list_trigger_fires.
+      const dismissed_fires = await dismissFiresForTriggers(ctx, [trigger_id]);
+      return { success: true, deleted: trigger_id, ...(dismissed_fires > 0 ? { dismissed_fires } : {}) };
     },
   },
 
