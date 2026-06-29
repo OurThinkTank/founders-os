@@ -1,6 +1,6 @@
 {
   "name": "@ourthinktank/founders-os-core",
-  "version": "0.14.0",
+  "version": "1.2.0",
   "description": "Transport-agnostic core for Founders OS — CRM, tasks, finances, feeds, memory, and visual surface tools, exposed as raw ToolMaps for any MCP transport.",
   "author": "OurThinkTank",
   "license": "MIT",

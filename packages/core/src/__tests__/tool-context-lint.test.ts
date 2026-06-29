@@ -65,6 +65,8 @@ const CONTEXTUAL_FILES = [
   // still env-reading - tracked as deferred work in oss-launch-plan.md)
   "tools/financial/index.ts",
   "tools/financial/management.ts",
+  // Governance (born contextual 2026-06-24)
+  "tools/governance/index.ts",
   // Members (fully migrated 2026-05-28; financial/access.ts and
   // audit.ts helpers still env-reading - tracked as deferred work)
   "tools/members/index.ts",
@@ -89,6 +91,8 @@ const CONTEXTUAL_FILES = [
   "tools/tags/index.ts",
   // Tasks (fully migrated 2026-05-28)
   "tools/tasks/index.ts",
+  // Triggers (born contextual 2026-06-24)
+  "tools/triggers/index.ts",
 ] as const;
 
 /**
@@ -106,9 +110,14 @@ const CONTEXTUAL_FILES = [
 const HELPER_FILES = [
   "tools/audit.ts",
   "tools/financial/access.ts",
+  "tools/governance/delivery.ts",
+  "tools/governance/policy.ts",
+  "tools/governance/reconcile.ts",
   "tools/memory/embed.ts",
   "tools/permissions.ts",
   "tools/remove.ts",
+  "tools/triggers/cleanup.ts",
+  "tools/triggers/conditions.ts",
 ] as const;
 
 /**

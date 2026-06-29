@@ -33,6 +33,7 @@ import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
+import { cascadeTriggersForEntity } from "../triggers/cleanup.js";
 import type { ToolContext } from "../../types/context.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
@@ -891,6 +892,11 @@ export const playbookTools: ToolMap = {
           completed_at: new Date().toISOString(),
         })
         .eq("id", runId);
+
+      // Clean up any run-scoped watchers this run installed (triggers bound
+      // to the run itself). Customer/project-bound watchers persist; they are
+      // cleaned up when their own entity is archived.
+      await cascadeTriggersForEntity(ctx, "playbook_run", runId);
 
       const actionMsg =
         externalActions.length > 0

@@ -115,4 +115,16 @@ export const AUDIT_DOMAINS: Record<string, string[]> = {
   ],
   access: ["set_financial_access"],
   members: ["add_member", "set_member_owner", "remove_member"],
+  governance: [
+    "action_previewed",
+    "action_held",
+    "action_approved",
+    "action_rejected",
+    "action_executed",
+    "guardrail_policy_updated",
+    "reconcile_flagged",
+  ],
+  triggers: [
+    "trigger_fired",
+  ],
 };

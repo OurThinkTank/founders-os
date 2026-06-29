@@ -503,6 +503,7 @@ describe("GROUNDWORK-01 multi-tenant FK preconditions", () => {
     "financial_categories",
     "playbooks",
     "tasks",
+    "triggers",
   ];
 
   for (const table of targets) {
@@ -518,12 +519,13 @@ describe("GROUNDWORK-01 multi-tenant FK preconditions", () => {
     });
   }
 
-  it("setup.sql declares exactly 8 composite unique constraints", () => {
+  it("setup.sql declares exactly 9 composite unique constraints", () => {
     // Replaces the count self-check the original migration carried in a
-    // do-block. If a 9th company-scoped FK target is added (or one is
+    // do-block. If another company-scoped FK target is added (or one is
     // dropped), update the targets list above together with this count.
+    // 9th added 2026-06-24: triggers (Proactive Agents).
     const count = (sql.match(/_id_company_unique/g) ?? []).length;
-    expect(count).toBe(8);
+    expect(count).toBe(9);
   });
 });
 

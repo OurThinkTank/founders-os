@@ -17,6 +17,8 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../tools/register.js";
+import { governanceTools } from "../tools/governance/index.js";
+import { triggerTools } from "../tools/triggers/index.js";
 
 // ── Fake MCP server ──────────────────────────────────────────
 // Captures calls to registerTool() so we can inspect
@@ -462,5 +464,22 @@ describe("registerToolMap — contextual handler dispatch", () => {
     // object, NOT the context. This documents the failure mode so
     // future authors learn to use `(ctx, _params)` for no-args tools.
     expect(captured.firstArg).not.toBe(mockCtx);
+  });
+
+  // These domains are entirely contextual (no legacy handlers), so every
+  // handler MUST declare two arguments to route correctly. This pins the
+  // real exported maps so a no-args tool authored as `(ctx) =>` (which
+  // crashed get_policy / list_pending_approvals with `undefined.from`)
+  // fails CI instead of only surfacing at runtime in a demo.
+  it("TC-REG22: every governance tool handler declares two arguments", () => {
+    for (const [name, tool] of Object.entries(governanceTools)) {
+      expect(tool.handler.length, `governance tool "${name}" must be (ctx, params)`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("TC-REG23: every trigger tool handler declares two arguments", () => {
+    for (const [name, tool] of Object.entries(triggerTools)) {
+      expect(tool.handler.length, `trigger tool "${name}" must be (ctx, params)`).toBeGreaterThanOrEqual(2);
+    }
   });
 });
