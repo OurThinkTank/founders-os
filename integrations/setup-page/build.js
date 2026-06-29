@@ -20,6 +20,8 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 const PACKAGE_JSON_PATH = path.join(REPO_ROOT, 'packages/mcp-server/package.json');
 const SETUP_SQL_PATH = path.join(REPO_ROOT, 'supabase/setup.sql');
 const TEMPLATE_PATH = path.join(__dirname, 'index.html');
+const GENERATORS_PATH = path.join(__dirname, 'lib', 'setup-generators.js');
+const GENERATORS_TAG = '<script src="lib/setup-generators.js"></script>';
 
 // Parse args
 let outPath = path.join(__dirname, 'dist', 'index.html');
@@ -34,11 +36,19 @@ for (let i = 0; i < args.length; i++) {
 const packageJson = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf-8'));
 const template = fs.readFileSync(TEMPLATE_PATH, 'utf-8');
 const setupSql = fs.readFileSync(SETUP_SQL_PATH, 'utf-8');
+const generators = fs.readFileSync(GENERATORS_PATH, 'utf-8');
 const version = packageJson.version || '0.0.0';
 
 if (setupSql.indexOf('</script>') !== -1) {
   // Would break out of the data island; setup.sql should never contain this.
   throw new Error('supabase/setup.sql contains "</script>" and cannot be inlined safely.');
+}
+if (generators.indexOf('</script>') !== -1) {
+  throw new Error('lib/setup-generators.js contains "</script>" and cannot be inlined safely.');
+}
+if (template.indexOf(GENERATORS_TAG) === -1) {
+  // The standalone page must inline the generators to work as a single file.
+  throw new Error('index.html no longer contains the generators <script src> tag; update build.js.');
 }
 if (!/vector\(1024\)/.test(setupSql)) {
   // The page substitutes vector(1024) -> vector(<dim>). If the literal is
@@ -54,7 +64,10 @@ const output = template
     /<span id="versionTag">[^<]*<\/span>/,
     `<span id="versionTag">v${version}</span>`
   )
-  .replace('__SETUP_SQL__', () => setupSql);
+  .replace('__SETUP_SQL__', () => setupSql)
+  // Inline the canonical generators so the built page is a single self-
+  // contained file (the dev page loads them via the src tag instead).
+  .replace(GENERATORS_TAG, () => `<script>\n${generators}\n</script>`);
 
 const outDir = path.dirname(outPath);
 if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
@@ -63,3 +76,4 @@ fs.writeFileSync(outPath, output, 'utf-8');
 console.log(`Built setup page: ${outPath}`);
 console.log(`  Version: v${version}`);
 console.log(`  Inlined setup.sql: ${setupSql.length} bytes`);
+console.log(`  Inlined generators: ${generators.length} bytes`);

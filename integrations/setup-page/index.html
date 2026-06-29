@@ -620,12 +620,67 @@ select{cursor:pointer;appearance:none;
       <div class="code-block" id="ccConfigCode"></div>
       <div class="warning-box">This config contains your Supabase secret key. Treat it like a password - don't share it or commit it to git.</div>
     </div>
+
+    <!-- Step 3: Schedule the tick (optional) -->
+    <div class="cc-section">
+      <div class="cc-section-header">Step 3: Schedule the tick (optional)</div>
+      <div class="install-steps">
+        <div class="install-steps-title">What this is</div>
+        <ol>
+          <li>The tick is a small scheduled job that checks your watches on a cadence and stages anything that fires for your review. It performs nothing on its own - staged items wait for you.</li>
+          <li>Download the <strong>tick wrapper</strong> for your OS from <a href="https://github.com/OurThinkTank/founders-os/tree/main/integrations/scheduler">integrations/scheduler</a> and save it (e.g. <code>~/.local/bin/foundersos-tick.sh</code>, or the <code>.cmd</code> on Windows). The wrapper runs <code>detect</code> then <code>run --hold-only</code>.</li>
+          <li>Save the env file below to <code>~/.config/foundersos-tick.env</code> (the wrapper reads your credentials from there - scheduled jobs don't see your shell profile).</li>
+          <li>Install the scheduler unit below for your OS, then register it with the one-time command shown.</li>
+        </ol>
+      </div>
+      <div class="output-actions" style="align-items:center;gap:12px">
+        <label for="schedOs"><strong>Your OS:</strong></label>
+        <select id="schedOs" onchange="renderScheduler()">
+          <option value="mac">macOS (launchd)</option>
+          <option value="linux">Linux (systemd)</option>
+          <option value="cron">Linux/macOS (cron)</option>
+          <option value="windows">Windows (Task Scheduler)</option>
+        </select>
+        <label for="schedCadence"><strong>How often:</strong></label>
+        <select id="schedCadence" onchange="renderScheduler()">
+          <option value="hourly">Hourly</option>
+          <option value="daily">Daily (6am)</option>
+        </select>
+      </div>
+
+      <p class="install-note" style="margin-top:16px"><strong>1. Credentials file</strong> - save as <code>~/.config/foundersos-tick.env</code> (then <code>chmod 600</code> it):</p>
+      <div class="output-actions">
+        <button class="btn btn-primary" onclick="copyToClipboard('schedEnvCode','toast-sched-env-copy')">Copy</button>
+        <button class="btn btn-secondary" onclick="downloadSchedEnv()">Download .env</button>
+        <span class="copied-toast" id="toast-sched-env-copy">Copied!</span>
+        <span class="copied-toast" id="toast-sched-env-download">Downloaded!</span>
+      </div>
+      <div class="code-block" id="schedEnvCode"></div>
+
+      <p class="install-note" style="margin-top:16px"><strong>2. Scheduler unit</strong> - <span id="schedUnitWhere"></span>:</p>
+      <div class="output-actions">
+        <button class="btn btn-primary" onclick="copyToClipboard('schedUnitCode','toast-sched-unit-copy')">Copy</button>
+        <button class="btn btn-secondary" onclick="downloadSchedUnit()">Download</button>
+        <span class="copied-toast" id="toast-sched-unit-copy">Copied!</span>
+        <span class="copied-toast" id="toast-sched-unit-download">Downloaded!</span>
+      </div>
+      <div class="code-block" id="schedUnitCode"></div>
+
+      <p class="install-note" style="margin-top:16px"><strong>3. Register it</strong> (one-time):</p>
+      <div class="code-block" id="schedInstallCode"></div>
+      <div class="warning-box">The env file holds your Supabase secret key. Keep it private (chmod 600) and never commit it.</div>
+    </div>
   </div>
 </main>
 
 <!-- Canonical setup.sql, inlined at build time by build.js. Falls back to a
      GitHub fetch when this still holds the placeholder (unbuilt dev copy). -->
 <script id="setupSqlInlined" type="text/plain">__SETUP_SQL__</script>
+
+<!-- Canonical generators (mcp.json / setup.sql / scheduler). Loaded by src for
+     the dev page; build.js replaces this exact tag with the file inlined, so
+     the built single-file page is self-contained. Keep this tag on one line. -->
+<script src="lib/setup-generators.js"></script>
 
 <footer class="page-footer">
   <p>Founder's OS - <span id="versionTag">v1.2.0</span> - <a href="https://github.com/OurThinkTank/founders-os">GitHub</a></p>
@@ -995,8 +1050,7 @@ function buildEnv() {
 
 function buildMcpConfig() {
   var useLatest = document.getElementById('useLatest').checked;
-  var pkg = '@ourthinktank/founders-os' + (useLatest ? '@latest' : '');
-  return { mcpServers: { 'founders-os': { command: 'npx', args: ['-y', pkg], env: buildEnv() } } };
+  return FoundersOSSetup.buildMcpJson(buildEnv(), { useLatest: useLatest });
 }
 
 
@@ -1054,7 +1108,7 @@ function getDimension() {
 }
 
 function sqlForDimension(raw, dim) {
-  return raw.replace(/vector\(1024\)/g, 'vector(' + dim + ')');
+  return FoundersOSSetup.sqlForDimension(raw, dim);
 }
 
 function renderDbSql() {
@@ -1096,6 +1150,65 @@ function generateOutput() {
   panel.classList.add('visible');
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   renderDbSql();
+  renderScheduler();
+}
+
+/* ── Step 3: schedule the tick ──
+   All content comes from the shared FoundersOSSetup generators; this just
+   picks the OS view and wires copy/download. The units point at the tick
+   WRAPPER and carry no secrets - credentials live in the env file. */
+var _schedBundle = null;
+
+function renderScheduler() {
+  if (typeof FoundersOSSetup === 'undefined') return;
+  _schedBundle = FoundersOSSetup.buildSchedulerBundle(buildEnv(), {
+    cadence: document.getElementById('schedCadence').value,
+    dailyHour: 6,
+  });
+  document.getElementById('schedEnvCode').textContent = _schedBundle.envFile;
+
+  var os = document.getElementById('schedOs').value;
+  var unit, where, install;
+  if (os === 'mac') {
+    unit = _schedBundle.launchd;
+    where = 'save as ~/Library/LaunchAgents/com.foundersos.tick.plist (use the wrapper’s absolute path - launchd does not expand ~)';
+    install = 'launchctl load ~/Library/LaunchAgents/com.foundersos.tick.plist\nlaunchctl start com.foundersos.tick   # run once to test\ncat /tmp/foundersos-tick.log';
+  } else if (os === 'linux') {
+    unit = _schedBundle.systemdService + '\n# --- save the block below as foundersos-tick.timer ---\n' + _schedBundle.systemdTimer;
+    where = 'save the [Service]/[Unit] block as ~/.config/systemd/user/foundersos-tick.service and the timer block as foundersos-tick.timer (wrapper needs an absolute path)';
+    install = 'systemctl --user daemon-reload\nsystemctl --user enable --now foundersos-tick.timer\nsystemctl --user start foundersos-tick.service   # test once';
+  } else if (os === 'cron') {
+    unit = _schedBundle.cron;
+    where = 'add this line to your crontab';
+    install = 'crontab -e   # paste the line above, then save\ncrontab -l   # verify it is installed';
+  } else {
+    unit = _schedBundle.taskScheduler;
+    where = 'run these schtasks lines in a terminal (or save as a .cmd and run it)';
+    install = 'The /Create line registers the hourly task; /Run tests it once.';
+  }
+  document.getElementById('schedUnitCode').textContent = unit;
+  document.getElementById('schedUnitWhere').textContent = where;
+  document.getElementById('schedInstallCode').textContent = install;
+}
+
+function downloadSchedEnv() {
+  if (!_schedBundle) return;
+  triggerDownload(new Blob([_schedBundle.envFile], { type: 'text/plain' }), 'foundersos-tick.env');
+  flashToast('toast-sched-env-download');
+}
+
+function downloadSchedUnit() {
+  if (!_schedBundle) return;
+  var os = document.getElementById('schedOs').value;
+  var map = {
+    mac: ['com.foundersos.tick.plist', _schedBundle.launchd],
+    linux: ['foundersos-tick.service', _schedBundle.systemdService],
+    cron: ['foundersos-tick.cron', _schedBundle.cron],
+    windows: ['foundersos-tick-schedule.cmd', _schedBundle.taskScheduler]
+  };
+  var pair = map[os];
+  triggerDownload(new Blob([pair[1]], { type: 'text/plain' }), pair[0]);
+  flashToast('toast-sched-unit-download');
 }
 
 /* Warm the SQL cache early so it is ready by the time the user generates. */
