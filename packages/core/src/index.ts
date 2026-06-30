@@ -20,7 +20,12 @@ export type {
 } from "./tools/register.js";
 
 // ---- Context construction + Supabase ----
-export { buildContext, buildAutonomousContext, readEmbeddingConfigFromEnv } from "./context.js";
+export {
+  buildContext,
+  buildAutonomousContext,
+  readEmbeddingConfigFromEnv,
+  readAgentModelConfigFromEnv,
+} from "./context.js";
 export { createServiceClient } from "./supabase.js";
 
 // ---- Rendering contract ----
@@ -52,6 +57,7 @@ export {
 export type {
   ToolContext,
   EmbeddingConfig,
+  AgentModelConfig,
   IdentityMode,
   Actor,
 } from "./types/context.js";
@@ -78,9 +84,22 @@ export { surfaceTools } from "./tools/surfaces/index.js";
 export { playbookTools } from "./tools/playbooks/index.js";
 export { governanceTools } from "./tools/governance/index.js";
 export { triggerTools } from "./tools/triggers/index.js";
+export { notificationTools } from "./tools/notifications/index.js";
 export { evaluateDataTriggers } from "./tools/triggers/evaluate.js";
 export { runHoldOnly } from "./tools/run/hold-only.js";
 export type { HoldOnlyResult } from "./tools/run/hold-only.js";
+export {
+  getAgentModel,
+  MockAgentModel,
+  _resetAgentModelForTesting,
+} from "./agent/model.js";
+export type {
+  AgentModel,
+  AgentTool,
+  AgentMessage,
+  AgentToolCall,
+  AgentTurn,
+} from "./agent/model.js";
 export type {
   DataFire,
   EvaluateDataResult,
@@ -118,5 +137,6 @@ export { registerSurfaceTools } from "./tools/surfaces/index.js";
 export { registerPlaybookTools } from "./tools/playbooks/index.js";
 export { registerGovernanceTools, approveAction, bulkApproveActions } from "./tools/governance/index.js";
 export { registerTriggerTools } from "./tools/triggers/index.js";
+export { registerNotificationTools } from "./tools/notifications/index.js";
 export { registerProjectTools } from "./tools/projects/index.js";
 export { registerRestoreTools } from "./tools/restore.js";

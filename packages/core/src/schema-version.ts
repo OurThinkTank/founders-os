@@ -23,4 +23,4 @@
 // to run after updating the connector.
 // ============================================================
 
-export const EXPECTED_SCHEMA_VERSION = 39;
+export const EXPECTED_SCHEMA_VERSION = 40;

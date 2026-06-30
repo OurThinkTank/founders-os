@@ -44,6 +44,7 @@ import {
   registerPlaybookTools,
   registerGovernanceTools,
   registerTriggerTools,
+  registerNotificationTools,
   registerProjectTools,
   registerRestoreTools,
 } from "@ourthinktank/founders-os-core";
@@ -228,6 +229,7 @@ registerSurfaceTools(server, ctx);
 registerPlaybookTools(server, ctx);
 registerGovernanceTools(server, ctx);
 registerTriggerTools(server, ctx);
+registerNotificationTools(server, ctx);
 registerProjectTools(server, ctx);
 registerRestoreTools(server, ctx);
 

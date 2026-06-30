@@ -14,7 +14,11 @@
 
 import { createServiceClient } from "./supabase.js";
 import { getCompanyId, getUserId, isSoloMode } from "./utils/identity.js";
-import type { EmbeddingConfig, ToolContext } from "./types/context.js";
+import type {
+  AgentModelConfig,
+  EmbeddingConfig,
+  ToolContext,
+} from "./types/context.js";
 
 let cached: ToolContext | null = null;
 
@@ -104,6 +108,54 @@ export function readEmbeddingConfigFromEnv(): EmbeddingConfig {
 }
 
 /**
+ * Read agent-model configuration from FOUNDERSOS_AGENT_* env vars.
+ *
+ * Returns undefined when FOUNDERSOS_AGENT_PROVIDER is unset: that absence
+ * is the signal that no model is provisioned, which is how the runner
+ * knows full run is unavailable (and falls back to refusing, like today).
+ * Only called from buildAutonomousContext — interactive sessions never
+ * need a model.
+ *
+ * Defaults when a provider IS set:
+ *   model      = provider-specific (claude-sonnet-4-6 / gpt-4.1)
+ *   maxTokens  = 4096
+ *   keys       = ANTHROPIC_API_KEY / OPENAI_API_KEY (the latter shared
+ *                with the embedding layer)
+ */
+export function readAgentModelConfigFromEnv(): AgentModelConfig | undefined {
+  const raw = process.env.FOUNDERSOS_AGENT_PROVIDER;
+  if (!raw) return undefined;
+
+  const provider = raw.toLowerCase() as AgentModelConfig["provider"];
+  if (provider !== "anthropic" && provider !== "openai") {
+    throw new Error(
+      `Unknown FOUNDERSOS_AGENT_PROVIDER: "${raw}". Valid options: anthropic | openai`
+    );
+  }
+
+  const explicitModel = process.env.FOUNDERSOS_AGENT_MODEL;
+  const model =
+    explicitModel ??
+    (provider === "anthropic" ? "claude-sonnet-4-6" : "gpt-4.1");
+
+  const maxTokensRaw = process.env.FOUNDERSOS_AGENT_MAX_TOKENS;
+  const maxTokens = maxTokensRaw ? parseInt(maxTokensRaw, 10) : 4096;
+  if (isNaN(maxTokens) || maxTokens <= 0) {
+    throw new Error(
+      `FOUNDERSOS_AGENT_MAX_TOKENS must be a positive integer, got: "${maxTokensRaw}"`
+    );
+  }
+
+  return {
+    provider,
+    model,
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    maxTokens,
+  };
+}
+
+/**
  * Build the self-hosted ToolContext from env vars. Cached as a
  * singleton because identity is fixed for the process lifetime
  * under stdio MCP. The first call constructs the Supabase service
@@ -159,6 +211,9 @@ export function buildAutonomousContext(runId: string): ToolContext {
     isSoloMode: isSoloMode(),
     actor: { kind: "autonomous", runId },
     embedding: readEmbeddingConfigFromEnv(),
+    // Present only for the autonomous principal. undefined => full run
+    // is unavailable; the runner refuses rather than executes.
+    agentModel: readAgentModelConfigFromEnv(),
   };
 }
 

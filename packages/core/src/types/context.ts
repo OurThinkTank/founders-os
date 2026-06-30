@@ -77,6 +77,26 @@ export type EmbeddingConfig = {
 };
 
 /**
+ * Agent-model configuration for the headless runner (`founders-os-tick
+ * run --execute`, Phase 2b). A sibling of EmbeddingConfig: self-hosted
+ * builds it from FOUNDERSOS_AGENT_* env vars; hosted would resolve it
+ * per-tenant. Read ONLY inside buildAutonomousContext via
+ * readAgentModelConfigFromEnv() — interactive sessions never need a model.
+ *
+ * Provider-specific keys are optional; only the active provider's key
+ * needs to be set:
+ *   - anthropic: requires anthropicApiKey (ANTHROPIC_API_KEY)
+ *   - openai:    reuses openaiApiKey (OPENAI_API_KEY), shared with embeddings
+ */
+export type AgentModelConfig = {
+  provider: "anthropic" | "openai";
+  model: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  maxTokens: number;
+};
+
+/**
  * Per-tool execution context.
  *
  * `db` is the primary client used for every read and write that
@@ -122,4 +142,11 @@ export type ToolContext = {
    * docs/multi-deployment-architecture.md.
    */
   embedding: EmbeddingConfig;
+  /**
+   * Agent-model configuration for the headless runner. Present ONLY for
+   * the autonomous principal (built in buildAutonomousContext); absent
+   * for interactive sessions and when no agent model is configured. The
+   * runner treats an absent config as "full run unavailable".
+   */
+  agentModel?: AgentModelConfig;
 };

@@ -1147,6 +1147,27 @@ create trigger trg_trigger_fires_updated
   for each row execute function update_updated_at();
 
 
+-- ── Notifications inbox (migration 040) ──────────────────────
+-- Lightweight, free-form heads-up surface the headless agent (and any
+-- other source) posts to via notify_inbox. Distinct from trigger_fires:
+-- not FK-bound to a trigger, append-only, holds arbitrary notes rather
+-- than one-row-per-trigger fires.
+
+create table notifications (
+  id          uuid        primary key default uuid_generate_v4(),
+  company_id  text        not null default 'default',
+  title       text        not null,
+  body        text,
+  level       text        not null default 'info' check (level in ('info', 'warning')),
+  source      text,
+  created_by  text,
+  read_at     timestamptz,
+  created_at  timestamptz not null default now()
+);
+
+create index idx_notifications_unread on notifications (company_id) where read_at is null;
+
+
 -- ============================================================
 -- RSS SCHEMA
 -- ============================================================
@@ -1446,6 +1467,7 @@ alter table guardrail_policy        enable row level security;
 alter table pending_approvals       enable row level security;
 alter table reconciliation_findings enable row level security;
 alter table trigger_fires           enable row level security;
+alter table notifications           enable row level security;
 
 -- Deny-all for authenticated role on every table
 create policy "deny authenticated - customers"
@@ -1500,6 +1522,8 @@ create policy "deny authenticated - reconciliation_findings"
   on reconciliation_findings for all to authenticated using (false) with check (false);
 create policy "deny authenticated - trigger_fires"
   on trigger_fires for all to authenticated using (false) with check (false);
+create policy "deny authenticated - notifications"
+  on notifications for all to authenticated using (false) with check (false);
 
 -- ============================================================
 -- RLS AUTO-ENABLE (safety net)
@@ -1597,6 +1621,7 @@ grant select, insert, update, delete on public.guardrail_policy       to service
 grant select, insert, update, delete on public.pending_approvals      to service_role, authenticated;
 grant select, insert, update, delete on public.reconciliation_findings to service_role, authenticated;
 grant select, insert, update, delete on public.trigger_fires          to service_role, authenticated;
+grant select, insert, update, delete on public.notifications          to service_role, authenticated;
 
 -- Views (3)
 grant select on public.customer_summary                 to service_role, authenticated;
@@ -1642,11 +1667,11 @@ $$;
 
 grant select, insert, update, delete on public.founders_os_meta to service_role, authenticated;
 
--- 39 = adds the trigger_fires inbox (migration 039). Keep in lockstep
+-- 40 = adds the notifications inbox (migration 040). Keep in lockstep
 -- with EXPECTED_SCHEMA_VERSION in packages/core/src/schema-version.ts
 -- (schema-version-lint.test.ts enforces this).
 insert into founders_os_meta (key, value)
-  values ('schema_version', '39')
+  values ('schema_version', '40')
   on conflict (key) do nothing;
 
 -- ============================================================

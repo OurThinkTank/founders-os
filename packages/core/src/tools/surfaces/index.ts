@@ -357,9 +357,9 @@ export const surfaceTools: ToolMap = {
             format:
               "use time_of_day for the greeting (e.g. 'Good afternoon'). Order " +
               "sections: watches that fired while away (the trigger_fires inbox) " +
-              "first, then overdue and blocked items, then upcoming work, then " +
-              "recent CRM activity, then feed headlines. Apply the standard " +
-              "color conventions for status emphasis.",
+              "and unread notifications first, then overdue and blocked items, " +
+              "then upcoming work, then recent CRM activity, then feed headlines. " +
+              "Apply the standard color conventions for status emphasis.",
             forbidden:
               "do not omit any tool from call_these_tools; do not assume morning " +
               "in the greeting (use time_of_day).",
@@ -379,6 +379,7 @@ export const surfaceTools: ToolMap = {
         contract_version: RENDERING_CONTRACT_VERSION,
         call_these_tools: [
           "list_trigger_fires",
+          "list_notifications",
           "get_task_summary",
           "get_stuck_list",
           "get_dashboard",

@@ -73,6 +73,8 @@ const CONTEXTUAL_FILES = [
   // Memory (fully migrated 2026-05-28; embed.ts helper still env-reading,
   // tracked alongside the broader helper-refactor in oss-launch-plan.md)
   "tools/memory/index.ts",
+  // Notifications (born contextual 2026-06-30, Phase 2b.1)
+  "tools/notifications/index.ts",
   // Playbooks (fully migrated 2026-05-28; audit.ts helper still env-reading,
   // tracked as deferred work)
   "tools/playbooks/index.ts",
