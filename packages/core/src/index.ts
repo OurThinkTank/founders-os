@@ -145,7 +145,7 @@ export { registerMemberTools } from "./tools/members/index.js";
 export { registerRSSTools } from "./tools/rss/index.js";
 export { registerSurfaceTools } from "./tools/surfaces/index.js";
 export { registerPlaybookTools } from "./tools/playbooks/index.js";
-export { registerGovernanceTools, approveAction, bulkApproveActions } from "./tools/governance/index.js";
+export { registerGovernanceTools, approveAction, bulkApproveActions, verifyAndConsumeClearance } from "./tools/governance/index.js";
 export { registerTriggerTools } from "./tools/triggers/index.js";
 export { registerNotificationTools } from "./tools/notifications/index.js";
 export { registerProjectTools } from "./tools/projects/index.js";

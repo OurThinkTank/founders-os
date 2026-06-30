@@ -1094,6 +1094,28 @@ create trigger trg_pending_approvals_updated
   before update on pending_approvals
   for each row execute function update_updated_at();
 
+-- action_clearances: single-use clearance for the headless external
+-- dispatch chokepoint (verify-clearance, T0.2). execute_action records a
+-- 'cleared' row for an external action; the runtime hook flips it to
+-- 'dispatched' exactly once before performing the connector call. See
+-- migration 042.
+create table action_clearances (
+  company_id    text        not null default 'default',
+  jti           text        not null,
+  action_hash   text        not null,
+  connector     text        not null,
+  action_type   text        not null,
+  status        text        not null default 'cleared'
+                              check (status in ('cleared','dispatched')),
+  cleared_at    timestamptz not null default now(),
+  dispatched_at timestamptz,
+  expires_at    timestamptz not null,
+  primary key (company_id, jti)
+);
+
+create index idx_action_clearances_open on action_clearances (company_id)
+                                            where status = 'cleared';
+
 -- ── Reconciliation findings (off-book external side effects) ─
 create table reconciliation_findings (
   id                uuid        primary key default uuid_generate_v4(),
@@ -1533,6 +1555,7 @@ alter table reconciliation_findings enable row level security;
 alter table trigger_fires           enable row level security;
 alter table notifications           enable row level security;
 alter table agent_run_locks         enable row level security;
+alter table action_clearances       enable row level security;
 
 -- Deny-all for authenticated role on every table
 create policy "deny authenticated - customers"
@@ -1591,6 +1614,8 @@ create policy "deny authenticated - notifications"
   on notifications for all to authenticated using (false) with check (false);
 create policy "deny authenticated - agent_run_locks"
   on agent_run_locks for all to authenticated using (false) with check (false);
+create policy "deny authenticated - action_clearances"
+  on action_clearances for all to authenticated using (false) with check (false);
 
 -- ============================================================
 -- RLS AUTO-ENABLE (safety net)
@@ -1690,6 +1715,7 @@ grant select, insert, update, delete on public.reconciliation_findings to servic
 grant select, insert, update, delete on public.trigger_fires          to service_role, authenticated;
 grant select, insert, update, delete on public.notifications          to service_role, authenticated;
 grant select, insert, update, delete on public.agent_run_locks        to service_role, authenticated;
+grant select, insert, update, delete on public.action_clearances      to service_role, authenticated;
 
 -- Views (3)
 grant select on public.customer_summary                 to service_role, authenticated;
@@ -1737,11 +1763,11 @@ $$;
 
 grant select, insert, update, delete on public.founders_os_meta to service_role, authenticated;
 
--- 41 = adds the agent run lock + claim_trigger_fire RPC (migration 041).
+-- 42 = adds action_clearances, the single-use external dispatch clearance (migration 042).
 -- Keep in lockstep with EXPECTED_SCHEMA_VERSION in
 -- packages/core/src/schema-version.ts (schema-version-lint.test.ts enforces this).
 insert into founders_os_meta (key, value)
-  values ('schema_version', '41')
+  values ('schema_version', '42')
   on conflict (key) do nothing;
 
 -- ============================================================

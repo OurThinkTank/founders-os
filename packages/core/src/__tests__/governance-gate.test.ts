@@ -23,6 +23,7 @@ import {
   approveAction,
   bulkApproveActions,
   registerGovernanceTools,
+  verifyAndConsumeClearance,
 } from "../tools/governance/index.js";
 import type { ToolContext } from "../types/context.js";
 
@@ -534,6 +535,78 @@ describe("reconcile — turns 'cannot prevent' into 'cannot hide'", () => {
     const r = await reconcile(ctx, { connector: "stripe", activities: [{ external_ref: "ch_off", summary: "charge off-book" }] });
     expect(r.ungoverned_count).toBe(1);
     expect(r.findings[0].status).toBe("ungoverned");
+  });
+});
+
+// ── verify-clearance: the single-use external dispatch gate (T0.2) ──
+// execute_action records a single-use clearance for an external action;
+// the headless runtime's hook consumes it via verifyAndConsumeClearance
+// before performing the connector call. One clearance = one send.
+
+describe("verify-clearance — single-use external dispatch gate (T0.2)", () => {
+  // Clear a plain external Slack send under allow_with_log and return the
+  // jti + the action_hash the gate stored (read back from the clearance row).
+  async function clearExternalSlack(ctx: ToolContext) {
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text: "hi" } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+    const rows = ((ctx.db as unknown as FakeDb).store.get("action_clearances") ?? []) as Row[];
+    return { jti: p.jti as string, hash: rows[0].action_hash as string };
+  }
+
+  it("execute_action records a 'cleared' clearance for an external action", async () => {
+    const ctx = makeCtx();
+    const { hash } = await clearExternalSlack(ctx);
+    const rows = (ctx.db as unknown as FakeDb).store.get("action_clearances")!;
+    expect(rows.length).toBe(1);
+    expect(rows[0].status).toBe("cleared");
+    expect(rows[0].connector).toBe("slack");
+    expect(hash).toMatch(/^sha256:/);
+  });
+
+  it("records nothing for a native (non-external) cleared action", async () => {
+    const ctx = makeCtx();
+    await setPolicy(ctx, { tier_outcomes: { native_create: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "native", action: "create_task", params: { title: "x" } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+    const rows = (ctx.db as unknown as FakeDb).store.get("action_clearances") ?? [];
+    expect(rows.length).toBe(0);
+  });
+
+  it("allows exactly once, then denies the replay (single-use)", async () => {
+    const ctx = makeCtx();
+    const { jti, hash } = await clearExternalSlack(ctx);
+    const first = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: hash });
+    expect(first.allowed).toBe(true);
+    const second = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: hash });
+    expect(second.allowed).toBe(false);
+    expect(second.reason).toBe("no_fresh_clearance");
+  });
+
+  it("denies a wrong action_hash (bait-and-switch) without burning the clearance", async () => {
+    const ctx = makeCtx();
+    const { jti, hash } = await clearExternalSlack(ctx);
+    const bad = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: "sha256:forged" });
+    expect(bad.allowed).toBe(false);
+    const good = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: hash });
+    expect(good.allowed).toBe(true); // the real clearance was untouched
+  });
+
+  it("denies a wrong connector and an unknown jti", async () => {
+    const ctx = makeCtx();
+    const { jti, hash } = await clearExternalSlack(ctx);
+    expect((await verifyAndConsumeClearance(ctx, { connector: "stripe", jti, actionHash: hash })).allowed).toBe(false);
+    expect((await verifyAndConsumeClearance(ctx, { connector: "slack", jti: "nope", actionHash: "sha256:x" })).allowed).toBe(false);
+  });
+
+  it("denies an expired clearance", async () => {
+    const ctx = makeCtx();
+    const { jti, hash } = await clearExternalSlack(ctx);
+    const rows = (ctx.db as unknown as FakeDb).store.get("action_clearances")!;
+    rows[0].expires_at = new Date(Date.now() - 1000).toISOString();
+    const res = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: hash });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toBe("expired");
   });
 });
 

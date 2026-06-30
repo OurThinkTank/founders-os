@@ -90,6 +90,109 @@ function actionHash(a: ProposedAction): string {
   return "sha256:" + createHash("sha256").update(canonicalActionString(a)).digest("hex");
 }
 
+// ── External dispatch clearance (verify-clearance, T0.2) ────
+// The single-use record that lets the headless runtime's canUseTool hook
+// be a real chokepoint: execute_action records a clearance for an external
+// action; the hook consumes it (verifyAndConsumeClearance) before the
+// connector call. Held tiers already have a single-use guard
+// (pending_approvals approved -> executed); this is the parallel guard for
+// the allow / allow_with_log external path, which writes no approval row.
+
+/** TTL for a clearance: longer than the gap between execute_action and the
+ * runtime's connector call, short enough that a stale clearance cannot be
+ * dispatched much later. */
+const CLEARANCE_TTL_SECONDS = 600;
+
+/**
+ * Record a single-use clearance for an EXTERNAL action that just cleared
+ * execute_action. Native actions need none (founders-os performs them
+ * itself), so this is a no-op for them. Upsert by (company, jti) so
+ * re-clearing the same token re-arms rather than erroring (allow tiers have
+ * no replay guard).
+ */
+async function recordExternalClearance(
+  ctx: ToolContext,
+  resolved: ProposedAction,
+  jti: string,
+  hash: string
+): Promise<void> {
+  if (resolved.kind !== "external") return;
+  const nowMs = Date.now();
+  const actionType = `${resolved.kind}:${resolved.connector ?? "founders-os"}:${resolved.action ?? "action"}`;
+  const { error } = await ctx.db.from("action_clearances").upsert(
+    {
+      company_id: ctx.companyId,
+      jti,
+      action_hash: hash,
+      connector: resolved.connector ?? "",
+      action_type: actionType,
+      status: "cleared",
+      cleared_at: new Date(nowMs).toISOString(),
+      dispatched_at: null,
+      expires_at: new Date(nowMs + CLEARANCE_TTL_SECONDS * 1000).toISOString(),
+    },
+    { onConflict: "company_id,jti" }
+  );
+  if (error) throw new Error(`Failed to record action clearance: ${error.message}`);
+}
+
+/**
+ * Consume a single-use external dispatch clearance. Called by the headless
+ * runtime's canUseTool hook (NOT by the agent: it is in no tool map) before
+ * it performs an allowlisted connector call. Atomically flips the matching
+ * 'cleared' row to 'dispatched', so a clearance authorizes exactly one send.
+ * Denies, without burning the real clearance, when nothing matches the
+ * connector + jti + action_hash; denies a replay (already dispatched) and an
+ * expired clearance. Every decision is audited.
+ */
+export async function verifyAndConsumeClearance(
+  ctx: ToolContext,
+  params: { connector: string; jti: string; actionHash: string }
+): Promise<{ allowed: boolean; reason?: string }> {
+  const { connector, jti, actionHash } = params;
+  const nowIso = new Date().toISOString();
+
+  const { data, error } = await ctx.db
+    .from("action_clearances")
+    .update({ status: "dispatched", dispatched_at: nowIso })
+    .eq("company_id", ctx.companyId)
+    .eq("jti", jti)
+    .eq("connector", connector)
+    .eq("action_hash", actionHash)
+    .eq("status", "cleared")
+    .select("jti, expires_at")
+    .maybeSingle();
+  if (error) throw new Error(`Failed to consume clearance: ${error.message}`);
+
+  if (!data) {
+    await writeAuditLog(ctx, {
+      action: "dispatch_denied",
+      entity_type: "action",
+      entity_id: jti,
+      metadata: { connector, reason: "no_fresh_clearance" },
+    });
+    return { allowed: false, reason: "no_fresh_clearance" };
+  }
+
+  if (data.expires_at && new Date(data.expires_at as string).getTime() < Date.now()) {
+    await writeAuditLog(ctx, {
+      action: "dispatch_denied",
+      entity_type: "action",
+      entity_id: jti,
+      metadata: { connector, reason: "expired" },
+    });
+    return { allowed: false, reason: "expired" };
+  }
+
+  await writeAuditLog(ctx, {
+    action: "action_dispatched",
+    entity_type: "action",
+    entity_id: jti,
+    metadata: { connector, action_hash: actionHash },
+  });
+  return { allowed: true };
+}
+
 // ── Server-side template resolution (the "withhold" point) ──
 // Replaces {{path}} tokens in resolved params from a caller-supplied
 // context map. This is where a trigger's or playbook's templated
@@ -719,6 +822,10 @@ export const governanceTools: ToolMap = {
           metadata: { tier: row.tier, jti: v.payload.jti, summary: row.summary, held: true },
         });
 
+        // Record a single-use clearance so the headless dispatch hook can
+        // verify this exact external action was cleared (no-op for native).
+        await recordExternalClearance(ctx, resolved, v.payload.jti, hash);
+
         return {
           cleared: true,
           jti: v.payload.jti,
@@ -749,6 +856,10 @@ export const governanceTools: ToolMap = {
             `${resolved.kind === "external" ? resolved.connector ?? "connector" : "Founders OS"} ${resolved.action ?? "action"}`,
         },
       });
+      // Record a single-use clearance for the headless dispatch hook
+      // (allow / allow_with_log external path; no-op for native).
+      await recordExternalClearance(ctx, resolved, v.payload.jti, hash);
+
       return {
         cleared: true,
         jti: v.payload.jti,

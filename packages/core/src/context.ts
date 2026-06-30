@@ -12,6 +12,7 @@
 // See docs/multi-deployment-architecture.md.
 // ============================================================
 
+import { randomUUID } from "node:crypto";
 import { createServiceClient } from "./supabase.js";
 import { getCompanyId, getUserId, isSoloMode } from "./utils/identity.js";
 import type {
@@ -156,31 +157,65 @@ export function readAgentModelConfigFromEnv(): AgentModelConfig | undefined {
 }
 
 /**
+ * Read the launch principal from FOUNDERSOS_PRINCIPAL.
+ *
+ * Default (unset) is "interactive": a human-present stdio MCP session.
+ * Set "autonomous" when a scheduled, unattended runtime (the Option B
+ * Agent SDK runner) starts the MCP server, so the server stamps an
+ * autonomous actor and the hard gate arms: registerGovernanceTools serves
+ * the reduced map (no approve_action / set_policy / pause_agents) and
+ * preview_action floors every hold-tier action to staged_for_deferred_approval.
+ *
+ * Pure and exported so it can be tested without constructing a context.
+ */
+export function readPrincipalFromEnv(): "interactive" | "autonomous" {
+  const raw = process.env.FOUNDERSOS_PRINCIPAL;
+  if (!raw) return "interactive";
+  const v = raw.toLowerCase();
+  if (v !== "interactive" && v !== "autonomous") {
+    throw new Error(
+      `Unknown FOUNDERSOS_PRINCIPAL: "${raw}". Valid options: interactive | autonomous`
+    );
+  }
+  return v;
+}
+
+/**
  * Build the self-hosted ToolContext from env vars. Cached as a
  * singleton because identity is fixed for the process lifetime
  * under stdio MCP. The first call constructs the Supabase service
  * client; later calls reuse the same context object.
  *
+ * The principal is interactive by default. When FOUNDERSOS_PRINCIPAL is
+ * "autonomous" (set by an unattended runtime), the actor is autonomous and
+ * identityMode is background, which is what arms the hard gate outside the
+ * in-process runner. The autonomous MCP server does NOT drive a model, so
+ * no agentModel is read here (the runtime owns the loop).
+ *
  * Throws (via createServiceClient) if SUPABASE_URL / SUPABASE_SECRET_KEY
  * are missing. Throws (via getCompanyId / getUserId) if the identity
- * env vars contain unsafe characters.
+ * env vars contain unsafe characters, or on an invalid FOUNDERSOS_PRINCIPAL.
  */
 export function buildContext(): ToolContext {
   if (cached) return cached;
 
   const client = createServiceClient();
+  const autonomous = readPrincipalFromEnv() === "autonomous";
 
   cached = {
     db: client,
     admin: client, // self-hosted: same client; service role bypasses RLS anyway
     companyId: getCompanyId(),
     userId: getUserId(),
-    identityMode: "env",
+    identityMode: autonomous ? "background" : "env",
     isSoloMode: isSoloMode(),
-    // The stdio MCP server is always a human-present session. The
-    // autonomous tick/run builds its own context with an 'autonomous'
-    // actor; that is what the hard gate refuses hold-tier clearances for.
-    actor: { kind: "interactive", userId: getUserId() },
+    // Interactive by default. When a scheduled runtime launches the server
+    // with FOUNDERSOS_PRINCIPAL=autonomous, the actor is autonomous and the
+    // hard gate refuses/stages hold-tier clearances. A per-process runId
+    // (overridable via FOUNDERSOS_RUN_ID) attributes the run in the audit log.
+    actor: autonomous
+      ? { kind: "autonomous", runId: process.env.FOUNDERSOS_RUN_ID ?? randomUUID() }
+      : { kind: "interactive", userId: getUserId() },
     embedding: readEmbeddingConfigFromEnv(),
   };
 

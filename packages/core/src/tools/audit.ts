@@ -134,6 +134,8 @@ export const AUDIT_DOMAINS: Record<string, string[]> = {
     "action_approved",
     "action_rejected",
     "action_executed",
+    "action_dispatched",
+    "dispatch_denied",
     "guardrail_policy_updated",
     "reconcile_flagged",
   ],
