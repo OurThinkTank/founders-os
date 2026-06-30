@@ -23,19 +23,38 @@ import type { ToolContext } from "../types/context.js";
 import type { ProposedAction } from "../tools/playbooks/risk.js";
 import { actionHash, verifyAndConsumeClearance } from "../tools/governance/index.js";
 import { parseConnectorTool, type RunnerCanUseTool } from "./runner.js";
+import { checkConnectorCapability, type ConnectorPolicy } from "./connector-policy.js";
 
 /**
  * Build the connectorDecision backed by verify-clearance. Pass it to
  * makeRunnerCanUseTool({ connectorDecision }). It only ever sees connector
- * tools (founders-os tools are handled before it); it allows a connector
- * write solely when a fresh clearance for the exact action exists, and
- * consumes that clearance so the same write cannot run twice.
+ * tools (founders-os tools are handled before it).
+ *
+ * Order of checks, all of which must pass to allow a connector write:
+ *   1. capability + scope (T2.3): when a `policy` is supplied, the connector
+ *      must be enabled, the verb allowlisted, and the target scope (e.g. a
+ *      Slack channel) permitted. Checked FIRST so a policy-denied call never
+ *      consumes a clearance. With no policy, this step is skipped (the
+ *      clearance-only behaviour from T2.2).
+ *   2. fresh clearance (T2.2): a `cleared` clearance for the EXACT action
+ *      (content hash) is atomically consumed, so the write runs at most once
+ *      and a bait-and-switch is refused.
  */
-export function makeVerifyClearanceDecision(ctx: ToolContext): RunnerCanUseTool {
+export function makeVerifyClearanceDecision(
+  ctx: ToolContext,
+  opts: { policy?: ConnectorPolicy } = {}
+): RunnerCanUseTool {
   return async (toolName, input) => {
     const parsed = parseConnectorTool(toolName);
     if (!parsed) {
       return { behavior: "deny", message: `Cannot identify the connector for ${toolName}.` };
+    }
+
+    if (opts.policy) {
+      const cap = checkConnectorCapability(opts.policy, parsed.connector, parsed.action, input);
+      if (!cap.ok) {
+        return { behavior: "deny", message: `Not permitted: ${cap.reason}.` };
+      }
     }
 
     const action: ProposedAction = {

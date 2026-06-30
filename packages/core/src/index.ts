@@ -125,6 +125,8 @@ export {
   runAgentTick,
 } from "./agent/runner.js";
 export { makeVerifyClearanceDecision } from "./agent/clearance-hook.js";
+export { checkConnectorCapability } from "./agent/connector-policy.js";
+export type { ConnectorPolicy, ConnectorActionPolicy, CapabilityCheck } from "./agent/connector-policy.js";
 export type {
   RunnerToolUse,
   RunnerMessage,

@@ -27,6 +27,7 @@ import {
 } from "../tools/governance/index.js";
 import { makeVerifyClearanceDecision } from "../agent/clearance-hook.js";
 import { parseConnectorTool } from "../agent/runner.js";
+import { checkConnectorCapability, type ConnectorPolicy } from "../agent/connector-policy.js";
 import type { ToolContext } from "../types/context.js";
 
 beforeAll(() => {
@@ -662,6 +663,63 @@ describe("verify-clearance dispatch hook (T2.2)", () => {
     const r = await decide("mcp__slack__send_message", { text: "unsanctioned" });
     expect(r.behavior).toBe("deny");
     if (r.behavior === "deny") expect(r.message).toMatch(/clearance/i);
+  });
+});
+
+// ── Connector capability + scope policy (T2.3, Layer 1) ──
+// Auto-dispatch is opt-in per connector: a verb/scope must be enabled in the
+// policy AND back a fresh clearance. The capability check runs first, so a
+// policy-denied call never burns a clearance.
+
+describe("connector capability + scope policy (T2.3)", () => {
+  const policy: ConnectorPolicy = {
+    slack: { actions: ["send_message", "schedule_message"], scopeField: "channel", scopes: ["#general", "#alerts"] },
+  };
+
+  it("checkConnectorCapability: allows an enabled verb with an allowed scope", () => {
+    expect(checkConnectorCapability(policy, "slack", "send_message", { channel: "#general", text: "hi" }).ok).toBe(true);
+  });
+  it("checkConnectorCapability: denies a connector absent from the policy", () => {
+    expect(checkConnectorCapability(policy, "stripe", "create_charge", {}).ok).toBe(false);
+  });
+  it("checkConnectorCapability: denies a non-allowlisted verb", () => {
+    expect(checkConnectorCapability(policy, "slack", "delete_channel", { channel: "#general" }).ok).toBe(false);
+  });
+  it("checkConnectorCapability: denies a scope outside the allowlist", () => {
+    expect(checkConnectorCapability(policy, "slack", "send_message", { channel: "#random" }).ok).toBe(false);
+  });
+  it("checkConnectorCapability: allows any scope when scopes is omitted", () => {
+    const p2: ConnectorPolicy = { slack: { actions: ["send_message"], scopeField: "channel" } };
+    expect(checkConnectorCapability(p2, "slack", "send_message", { channel: "#anything" }).ok).toBe(true);
+  });
+
+  async function clearSlack(ctx: ToolContext, params: Record<string, unknown>) {
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+  }
+
+  it("the policy-gated hook allows an enabled verb + allowed channel backed by a clearance", async () => {
+    const ctx = makeCtx();
+    await clearSlack(ctx, { channel: "#general", text: "renewal note" });
+    const decide = makeVerifyClearanceDecision(ctx, { policy });
+    expect((await decide("mcp__slack__send_message", { channel: "#general", text: "renewal note" })).behavior).toBe("allow");
+  });
+
+  it("denies a disallowed channel at the hook without consuming the clearance", async () => {
+    const ctx = makeCtx();
+    await clearSlack(ctx, { channel: "#general", text: "renewal note" });
+    const decide = makeVerifyClearanceDecision(ctx, { policy });
+    expect((await decide("mcp__slack__send_message", { channel: "#secret", text: "renewal note" })).behavior).toBe("deny");
+    // the #general clearance was not burned, so the permitted call still works
+    expect((await decide("mcp__slack__send_message", { channel: "#general", text: "renewal note" })).behavior).toBe("allow");
+  });
+
+  it("denies a connector with no policy entry even when a clearance exists", async () => {
+    const ctx = makeCtx();
+    await clearSlack(ctx, { channel: "#general", text: "hi" });
+    const decide = makeVerifyClearanceDecision(ctx, { policy: {} });
+    expect((await decide("mcp__slack__send_message", { channel: "#general", text: "hi" })).behavior).toBe("deny");
   });
 });
 

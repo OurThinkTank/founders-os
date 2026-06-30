@@ -24,6 +24,7 @@ import type {
   RunnerMessage,
   RunnerMcpServers,
   RunAgentTickOptions,
+  ConnectorPolicy,
 } from "@ourthinktank/founders-os-core";
 
 // ── Runner selection (pure) ────────────────────────────────
@@ -78,6 +79,18 @@ export function foundersOsLaunch(): { command: string; args: string[] } {
   }
   const here = dirname(fileURLToPath(import.meta.url));
   return { command: process.execPath, args: [resolve(here, "index.js")] };
+}
+
+/** Load the per-connector auto-dispatch policy from FOUNDERSOS_CONNECTOR_POLICY
+ * (a JSON object keyed by connector, each with `actions` and optional
+ * `scopeField`/`scopes`). Unset => {} => every connector is denied at the
+ * hook, so the runner stays stage-only until a connector is explicitly
+ * enabled. This is separate from the credential: the token lives in the
+ * connectors MCP config (FOUNDERSOS_RUNNER_CONNECTORS), never here. */
+export function loadConnectorPolicy(): ConnectorPolicy {
+  const raw = process.env.FOUNDERSOS_CONNECTOR_POLICY;
+  if (!raw) return {};
+  return JSON.parse(raw) as ConnectorPolicy;
 }
 
 /** Load connector MCP servers from FOUNDERSOS_RUNNER_CONNECTORS (a JSON file

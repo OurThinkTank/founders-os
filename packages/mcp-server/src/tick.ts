@@ -47,6 +47,7 @@ import {
   collectServerEnv,
   foundersOsLaunch,
   loadRunnerConnectors,
+  loadConnectorPolicy,
   defaultRunQuery,
 } from "./agent-runner.js";
 
@@ -233,6 +234,7 @@ async function runAgentSdkMode(args: Args): Promise<number> {
   const runId = randomUUID();
   let mcpServers;
   let hookCtx;
+  let connectorPolicy;
   try {
     const launch = foundersOsLaunch();
     mcpServers = buildRunnerMcpServers({
@@ -242,6 +244,9 @@ async function runAgentSdkMode(args: Args): Promise<number> {
       serverEnv: collectServerEnv(),
       connectors: loadRunnerConnectors(),
     });
+    // Per-connector auto-dispatch policy (verbs + scopes). Empty by default,
+    // so every connector is denied at the hook until explicitly enabled.
+    connectorPolicy = loadConnectorPolicy();
     // The verify-clearance hook needs DB access; build an autonomous context
     // for it (it reads/writes the same action_clearances the founders-os
     // subprocess writes via execute_action).
@@ -257,10 +262,13 @@ async function runAgentSdkMode(args: Args): Promise<number> {
     allowedTools: runnerAllowedTools(),
     systemPrompt: RUNNER_SYSTEM_PROMPT,
     prompt: RUNNER_USER_PROMPT,
-    // A connector write is allowed only if it consumes a fresh clearance for
-    // the exact action (verify-clearance, T2.2). With no enabled connector
-    // the model has no connector tools and everything stages.
-    canUseTool: makeRunnerCanUseTool({ connectorDecision: makeVerifyClearanceDecision(hookCtx) }),
+    // A connector write is allowed only if its verb + scope are enabled by
+    // the connector policy (T2.3) AND it consumes a fresh clearance for the
+    // exact action (verify-clearance, T2.2). An empty policy denies every
+    // connector, so the runner stays stage-only until one is enabled.
+    canUseTool: makeRunnerCanUseTool({
+      connectorDecision: makeVerifyClearanceDecision(hookCtx, { policy: connectorPolicy }),
+    }),
     maxTurns: maxTurnsRaw ? Number(maxTurnsRaw) : 40,
     model: process.env.FOUNDERSOS_AGENT_MODEL,
   };
