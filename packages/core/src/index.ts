@@ -127,6 +127,8 @@ export {
 export { makeVerifyClearanceDecision } from "./agent/clearance-hook.js";
 export { checkConnectorCapability } from "./agent/connector-policy.js";
 export type { ConnectorPolicy, ConnectorActionPolicy, CapabilityCheck } from "./agent/connector-policy.js";
+export { runAgentSession } from "./agent/session.js";
+export type { RunAgentSessionConfig, AgentSessionResult } from "./agent/session.js";
 export type {
   RunnerToolUse,
   RunnerMessage,

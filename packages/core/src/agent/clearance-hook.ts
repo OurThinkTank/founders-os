@@ -43,12 +43,23 @@ import { checkConnectorCapability, type ConnectorPolicy } from "./connector-poli
  */
 export function makeVerifyClearanceDecision(
   ctx: ToolContext,
-  opts: { policy?: ConnectorPolicy } = {}
+  opts: {
+    policy?: ConnectorPolicy;
+    /** Called once per allowed dispatch, for the run's `sent` accounting. */
+    onAllow?: () => void;
+    /** Returns true when the run's send budget is spent; the hook then denies
+     * further connector writes (without consuming a clearance). */
+    budgetReached?: () => boolean;
+  } = {}
 ): RunnerCanUseTool {
   return async (toolName, input) => {
     const parsed = parseConnectorTool(toolName);
     if (!parsed) {
       return { behavior: "deny", message: `Cannot identify the connector for ${toolName}.` };
+    }
+
+    if (opts.budgetReached?.()) {
+      return { behavior: "deny", message: "The connector send budget for this run is exhausted." };
     }
 
     if (opts.policy) {
@@ -73,6 +84,7 @@ export function makeVerifyClearanceDecision(
     });
 
     if (result.allowed) {
+      opts.onAllow?.();
       // Reconcile-at-dispatch (T2.4): record the governed send now, matched
       // to the clearance just consumed, so no later fetch-and-diff is needed.
       if (result.jti) {

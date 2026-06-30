@@ -35,12 +35,9 @@ import {
   readAgentModelConfigFromEnv,
   buildRunnerMcpServers,
   runnerAllowedTools,
-  makeRunnerCanUseTool,
-  makeVerifyClearanceDecision,
-  runAgentTick,
+  runAgentSession,
   RUNNER_SYSTEM_PROMPT,
   RUNNER_USER_PROMPT,
-  type RunAgentTickOptions,
 } from "@ourthinktank/founders-os-core";
 import {
   selectRunner,
@@ -214,12 +211,13 @@ async function runRun(args: Args): Promise<number> {
 }
 
 /**
- * The Agent SDK runner (Option B, primary). It does not touch the database:
- * it launches the founders-os MCP server in autonomous mode plus any
- * configured connectors, and drives a model session that drains the inbox.
- * The model's only writes are the gate-governed founders-os tools;
- * connector tools are denied here (stage-only) until verify-clearance is
- * wired (T2.2), so externals still stage for human approval.
+ * The Agent SDK runner (Option B, primary). It launches the founders-os MCP
+ * server in autonomous mode plus any configured connectors and drives a model
+ * session that drains the inbox. runAgentSession applies the pause check, the
+ * run lock, and the send budget; a connector write is performed only when its
+ * verb + scope are enabled by the policy AND it consumes a fresh clearance. An
+ * empty policy denies every connector, so externals stage for human approval.
+ * The autonomous hookCtx is for the verify-clearance hook's DB access.
  */
 async function runAgentSdkMode(args: Args): Promise<number> {
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
@@ -257,43 +255,57 @@ async function runAgentSdkMode(args: Args): Promise<number> {
   }
 
   const maxTurnsRaw = process.env.FOUNDERSOS_AGENT_MAX_TURNS;
-  const opts: RunAgentTickOptions = {
-    mcpServers,
-    allowedTools: runnerAllowedTools(),
-    systemPrompt: RUNNER_SYSTEM_PROMPT,
-    prompt: RUNNER_USER_PROMPT,
-    // A connector write is allowed only if its verb + scope are enabled by
-    // the connector policy (T2.3) AND it consumes a fresh clearance for the
-    // exact action (verify-clearance, T2.2). An empty policy denies every
-    // connector, so the runner stays stage-only until one is enabled.
-    canUseTool: makeRunnerCanUseTool({
-      connectorDecision: makeVerifyClearanceDecision(hookCtx, { policy: connectorPolicy }),
-    }),
-    maxTurns: maxTurnsRaw ? Number(maxTurnsRaw) : 40,
-    model: process.env.FOUNDERSOS_AGENT_MODEL,
-  };
+  const maxSendsRaw = process.env.FOUNDERSOS_AGENT_MAX_SENDS;
 
   try {
-    const summary = await runAgentTick(opts, defaultRunQuery);
+    // runAgentSession owns the pause check, the per-company run lock, and the
+    // send budget; a connector write needs its verb + scope enabled by the
+    // policy (T2.3) AND a fresh clearance (T2.2). Empty policy => stage-only.
+    const res = await runAgentSession(
+      hookCtx,
+      {
+        mcpServers,
+        allowedTools: runnerAllowedTools(),
+        systemPrompt: RUNNER_SYSTEM_PROMPT,
+        prompt: RUNNER_USER_PROMPT,
+        model: process.env.FOUNDERSOS_AGENT_MODEL,
+        maxTurns: maxTurnsRaw ? Number(maxTurnsRaw) : 40,
+        maxSends: maxSendsRaw ? Number(maxSendsRaw) : undefined,
+        policy: connectorPolicy,
+      },
+      defaultRunQuery
+    );
+
     const out = {
       mode: "run:agent-sdk",
       run_id: runId,
-      tool_calls: summary.toolCalls,
-      created: summary.created,
-      staged: summary.staged,
-      resolved: summary.resolved,
-      errors: summary.errors,
+      paused: res.paused,
+      locked_out: res.locked_out,
+      sent: res.sent,
+      created: res.created,
+      staged: res.staged,
+      resolved: res.resolved,
+      budget_exhausted: res.budget_exhausted,
+      errors: res.errors,
     };
     if (args.json) {
       process.stdout.write(JSON.stringify(out) + "\n");
     } else if (!args.quiet) {
-      const parts = [
-        `created ${summary.created}`,
-        `staged ${summary.staged} for review`,
-        `resolved ${summary.resolved}`,
-      ];
-      if (summary.errors) parts.push(`${summary.errors} tool error(s)`);
-      process.stdout.write(`[tick] run:agent-sdk: ${parts.join(", ")}\n`);
+      if (res.paused) {
+        process.stdout.write("[tick] run:agent-sdk: agents are paused company-wide; nothing processed.\n");
+      } else if (res.locked_out) {
+        process.stdout.write("[tick] run:agent-sdk: another run holds the lock; nothing processed.\n");
+      } else {
+        const parts = [
+          `sent ${res.sent}`,
+          `created ${res.created}`,
+          `staged ${res.staged} for review`,
+          `resolved ${res.resolved}`,
+        ];
+        if (res.budget_exhausted) parts.push("send budget exhausted");
+        if (res.errors) parts.push(`${res.errors} tool error(s)`);
+        process.stdout.write(`[tick] run:agent-sdk: ${parts.join(", ")}\n`);
+      }
     }
     return EXIT_OK;
   } catch (e) {
