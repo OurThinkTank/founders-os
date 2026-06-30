@@ -33,6 +33,14 @@
     "openai": "^4.100.0",
     "zod": "^3.25.76"
   },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.196"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "@vitest/coverage-v8": "^4.1.4",

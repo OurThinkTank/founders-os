@@ -33,7 +33,21 @@ import {
   runHoldOnly,
   runFull,
   readAgentModelConfigFromEnv,
+  buildRunnerMcpServers,
+  runnerAllowedTools,
+  makeRunnerCanUseTool,
+  runAgentTick,
+  RUNNER_SYSTEM_PROMPT,
+  RUNNER_USER_PROMPT,
+  type RunAgentTickOptions,
 } from "@ourthinktank/founders-os-core";
+import {
+  selectRunner,
+  collectServerEnv,
+  foundersOsLaunch,
+  loadRunnerConnectors,
+  defaultRunQuery,
+} from "./agent-runner.js";
 
 // Exit codes: 0 clean, 1 config/runtime failure, 2 usage error.
 const EXIT_OK = 0;
@@ -99,11 +113,13 @@ run options:
                      to approve/edit/reject; never sends or performs anything.
   --execute          Model-driven full run: a model reads each fire and creates
                      internal follow-ups (tasks, notifications) or stages
-                     external actions for approval. Requires an agent model
-                     (FOUNDERSOS_AGENT_PROVIDER); equivalent to
-                     FOUNDERSOS_TICK_RUN_MODE=full. It does NOT execute external
-                     actions - it detects, withholds, records, and reconciles
-                     for a human to approve.
+                     external actions for approval. Uses the Agent SDK runner by
+                     default (needs ANTHROPIC_API_KEY); set
+                     FOUNDERSOS_TICK_RUNNER=inprocess for the frozen fallback
+                     loop (needs FOUNDERSOS_AGENT_PROVIDER, OpenAI-capable).
+                     Equivalent to FOUNDERSOS_TICK_RUN_MODE=full. It does NOT
+                     auto-send external actions yet: externals stage for a human
+                     to approve.
   --json / --quiet   As above.`;
 
 async function runDetect(args: Args): Promise<number> {
@@ -155,29 +171,119 @@ async function runDetect(args: Args): Promise<number> {
 }
 
 /**
- * Dispatch `run` to the right mode. Full run is reached ONLY when both an
- * explicit opt-in (--execute or FOUNDERSOS_TICK_RUN_MODE=full) AND a
- * configured agent model are present, so it can never be flipped on by a
- * flag alone without also provisioning a model. Otherwise --hold-only is
- * the supported posture; bare `run` is refused.
+ * Dispatch `run` to the right mode. A full run (--execute or
+ * FOUNDERSOS_TICK_RUN_MODE=full) goes to the Agent SDK runner by default, or
+ * the frozen Phase 2b in-process loop when FOUNDERSOS_TICK_RUNNER=inprocess.
+ * Otherwise --hold-only stages everything; bare `run` is refused.
  */
 async function runRun(args: Args): Promise<number> {
-  const fullRequested = args.execute || process.env.FOUNDERSOS_TICK_RUN_MODE === "full";
+  const choice = selectRunner({
+    execute: args.execute,
+    holdOnly: args.holdOnly,
+    runMode: process.env.FOUNDERSOS_TICK_RUN_MODE,
+    runner: process.env.FOUNDERSOS_TICK_RUNNER,
+  });
 
-  if (fullRequested) {
+  if (choice === "agent-sdk") return runAgentSdkMode(args);
+
+  if (choice === "inprocess") {
+    // The in-process fallback drives the model itself, so it still needs the
+    // FOUNDERSOS_AGENT_* model config (the Agent SDK path reads its own key).
     const agentConfig = readAgentModelConfigFromEnv();
     if (!agentConfig) {
       process.stderr.write(
-        "[tick] full run was requested (--execute / FOUNDERSOS_TICK_RUN_MODE=full) but no agent model " +
-          "is configured. Set FOUNDERSOS_AGENT_PROVIDER (and FOUNDERSOS_AGENT_MODEL + an API key), or " +
-          "use --hold-only to stage without a model.\n"
+        "[tick] the in-process fallback runner (FOUNDERSOS_TICK_RUNNER=inprocess) needs an agent model. " +
+          "Set FOUNDERSOS_AGENT_PROVIDER (+ FOUNDERSOS_AGENT_MODEL + an API key), or unset " +
+          "FOUNDERSOS_TICK_RUNNER to use the Agent SDK runner.\n"
       );
       return EXIT_FAIL;
     }
     return runFullMode(args);
   }
 
-  return runHold(args);
+  if (choice === "hold-only") return runHold(args);
+
+  // refuse: bare `run` with no posture.
+  process.stderr.write(
+    "[tick] run requires --execute (Agent SDK runner; needs ANTHROPIC_API_KEY) or --hold-only " +
+      "(stage everything, perform nothing).\n"
+  );
+  return EXIT_USAGE;
+}
+
+/**
+ * The Agent SDK runner (Option B, primary). It does not touch the database:
+ * it launches the founders-os MCP server in autonomous mode plus any
+ * configured connectors, and drives a model session that drains the inbox.
+ * The model's only writes are the gate-governed founders-os tools;
+ * connector tools are denied here (stage-only) until verify-clearance is
+ * wired (T2.2), so externals still stage for human approval.
+ */
+async function runAgentSdkMode(args: Args): Promise<number> {
+  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+    process.stderr.write(
+      "[tick] the Agent SDK runner needs ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN). " +
+        "For an OpenAI-capable run, set FOUNDERSOS_TICK_RUNNER=inprocess with FOUNDERSOS_AGENT_PROVIDER, " +
+        "or point ANTHROPIC_BASE_URL at a LiteLLM proxy.\n"
+    );
+    return EXIT_FAIL;
+  }
+
+  const runId = randomUUID();
+  let mcpServers;
+  try {
+    const launch = foundersOsLaunch();
+    mcpServers = buildRunnerMcpServers({
+      runId,
+      serverCommand: launch.command,
+      serverArgs: launch.args,
+      serverEnv: collectServerEnv(),
+      connectors: loadRunnerConnectors(),
+    });
+  } catch (e) {
+    process.stderr.write(`[tick] runner config error: ${errMessage(e)}\n`);
+    return EXIT_FAIL;
+  }
+
+  const maxTurnsRaw = process.env.FOUNDERSOS_AGENT_MAX_TURNS;
+  const opts: RunAgentTickOptions = {
+    mcpServers,
+    allowedTools: runnerAllowedTools(),
+    systemPrompt: RUNNER_SYSTEM_PROMPT,
+    prompt: RUNNER_USER_PROMPT,
+    // T2.1: stage-only. T2.2 passes a connectorDecision backed by verify-clearance.
+    canUseTool: makeRunnerCanUseTool({}),
+    maxTurns: maxTurnsRaw ? Number(maxTurnsRaw) : 40,
+    model: process.env.FOUNDERSOS_AGENT_MODEL,
+  };
+
+  try {
+    const summary = await runAgentTick(opts, defaultRunQuery);
+    const out = {
+      mode: "run:agent-sdk",
+      run_id: runId,
+      tool_calls: summary.toolCalls,
+      created: summary.created,
+      staged: summary.staged,
+      resolved: summary.resolved,
+      errors: summary.errors,
+    };
+    if (args.json) {
+      process.stdout.write(JSON.stringify(out) + "\n");
+    } else if (!args.quiet) {
+      const parts = [
+        `created ${summary.created}`,
+        `staged ${summary.staged} for review`,
+        `resolved ${summary.resolved}`,
+      ];
+      if (summary.errors) parts.push(`${summary.errors} tool error(s)`);
+      process.stdout.write(`[tick] run:agent-sdk: ${parts.join(", ")}\n`);
+    }
+    return EXIT_OK;
+  } catch (e) {
+    process.stderr.write(`[tick] agent-sdk run failed: ${errMessage(e)}\n`);
+    return EXIT_FAIL;
+  }
 }
 
 async function runFullMode(args: Args): Promise<number> {

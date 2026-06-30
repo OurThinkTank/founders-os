@@ -110,6 +110,31 @@ export {
   buildAgentTools,
 } from "./agent/allowlist.js";
 export type { AgentToolName } from "./agent/allowlist.js";
+export {
+  FOUNDERS_OS_MCP_NAME,
+  RUNNER_FOUNDERS_OS_TOOLS,
+  RUNNER_SYSTEM_PROMPT,
+  RUNNER_USER_PROMPT,
+  buildRunnerMcpServers,
+  foundersOsAllowedToolNames,
+  runnerAllowedTools,
+  isConnectorTool,
+  makeRunnerCanUseTool,
+  summarizeRunnerMessages,
+  runAgentTick,
+} from "./agent/runner.js";
+export type {
+  RunnerToolUse,
+  RunnerMessage,
+  RunnerPermission,
+  RunnerCanUseTool,
+  RunnerMcpStdioServer,
+  RunnerMcpServers,
+  BuildRunnerMcpOptions,
+  RunnerSummary,
+  RunAgentTickOptions,
+  RunnerQuery,
+} from "./agent/runner.js";
 export type {
   DataFire,
   EvaluateDataResult,
