@@ -89,6 +89,8 @@
       "OPENAI_API_KEY",
       "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION",
       "OLLAMA_BASE_URL",
+      // Optional: model-driven full run (founders-os-tick run --execute).
+      "FOUNDERSOS_AGENT_PROVIDER", "FOUNDERSOS_AGENT_MODEL", "ANTHROPIC_API_KEY",
     ];
     var seen = {};
     for (var i = 0; i < order.length; i++) {
@@ -100,6 +102,22 @@
     for (var key in e) {
       if (!seen[key] && e[key] != null && e[key] !== "") lines.push(envLine(key, e[key]));
     }
+    // Optional full-run section, always shown as commented guidance so a
+    // self-hoster can enable the model-driven `run --execute` without hunting
+    // for the variable names. Leave unset to keep the safe hold-only posture.
+    // Honest framing: full run detects, withholds, records, and reconciles -
+    // it never sends or executes an external action; everything outside
+    // Founders OS is staged for your approval.
+    lines.push(
+      "",
+      "# ── Optional: model-driven full run (founders-os-tick run --execute) ──",
+      "# A model triages the inbox and drafts follow-ups. It still only detects,",
+      "# withholds, records, and reconciles - external actions are staged for your",
+      "# approval, never sent. Leave unset to keep the hold-only posture.",
+      "#   FOUNDERSOS_AGENT_PROVIDER=anthropic        # or: openai",
+      "#   FOUNDERSOS_AGENT_MODEL=claude-sonnet-4-6   # or e.g. gpt-4.1",
+      "#   ANTHROPIC_API_KEY=sk-ant-...               # OpenAI reuses OPENAI_API_KEY above"
+    );
     return lines.join("\n") + "\n";
   }
 
