@@ -190,3 +190,35 @@ export async function reconcileActivities(
     ungoverned: findings.filter((f) => f.status === "ungoverned").length,
   };
 }
+
+/**
+ * Reconcile-at-dispatch (T2.4). When the runner hook clears and performs a
+ * connector write, it records the match HERE, immediately, instead of
+ * relying on a later report_trigger_observation / reconcile_actions fetch.
+ * The finding is `matched` and points at the consumed clearance (jti). Its
+ * external_ref is synthetic (`dispatch:<jti>`) because canUseTool runs before
+ * the connector returns its native id; the governance fact ("this send was
+ * cleared through the gate") is what the record certifies. Idempotent via the
+ * (company, connector, external_ref) unique key.
+ */
+export async function recordDispatchFinding(
+  ctx: ToolContext,
+  params: { connector: string; jti: string; summary: string }
+): Promise<void> {
+  const { connector, jti, summary } = params;
+  const nowIso = new Date().toISOString();
+  const { error } = await ctx.db.from("reconciliation_findings").upsert(
+    {
+      company_id: ctx.companyId,
+      connector,
+      external_ref: `dispatch:${jti}`,
+      observed_at: nowIso,
+      summary,
+      matched_approval: jti,
+      status: "matched",
+      updated_at: nowIso,
+    },
+    { onConflict: "company_id,connector,external_ref" }
+  );
+  if (error) throw new Error(`Failed to record dispatch finding: ${error.message}`);
+}

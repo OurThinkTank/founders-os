@@ -153,7 +153,7 @@ async function recordExternalClearance(
 export async function verifyAndConsumeClearance(
   ctx: ToolContext,
   params: { connector: string; actionHash: string; jti?: string }
-): Promise<{ allowed: boolean; reason?: string }> {
+): Promise<{ allowed: boolean; reason?: string; jti?: string }> {
   const { connector, actionHash, jti } = params;
 
   // 1. Find a fresh ('cleared') clearance matching the connector AND the exact
@@ -222,7 +222,7 @@ export async function verifyAndConsumeClearance(
     entity_id: candidate.jti,
     metadata: { connector, action_hash: actionHash },
   });
-  return { allowed: true };
+  return { allowed: true, jti: candidate.jti };
 }
 
 // ── Server-side template resolution (the "withhold" point) ──

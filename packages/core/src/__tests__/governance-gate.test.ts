@@ -723,6 +723,39 @@ describe("connector capability + scope policy (T2.3)", () => {
   });
 });
 
+// ── Reconcile-at-dispatch (T2.4) ──
+// An allowed dispatch records its own matched finding, linked to the consumed
+// clearance, so a headless send needs no later fetch-and-diff.
+
+describe("reconcile-at-dispatch (T2.4)", () => {
+  it("an allowed dispatch writes a matched finding linked to the clearance", async () => {
+    const ctx = makeCtx();
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text: "renewal note" } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+
+    const decide = makeVerifyClearanceDecision(ctx);
+    expect((await decide("mcp__slack__send_message", { text: "renewal note" })).behavior).toBe("allow");
+
+    const findings = ((ctx.db as unknown as FakeDb).store.get("reconciliation_findings") ?? []) as Row[];
+    expect(findings.length).toBe(1);
+    expect(findings[0].status).toBe("matched");
+    expect(findings[0].matched_approval).toBe(p.jti);
+    expect(findings[0].external_ref).toBe(`dispatch:${p.jti}`);
+
+    const list = await listFindings(ctx, { status: "matched" });
+    expect(list.count).toBe(1);
+  });
+
+  it("a denied dispatch writes no finding", async () => {
+    const ctx = makeCtx();
+    const decide = makeVerifyClearanceDecision(ctx);
+    await decide("mcp__slack__send_message", { text: "no clearance" });
+    const findings = (ctx.db as unknown as FakeDb).store.get("reconciliation_findings") ?? [];
+    expect(findings.length).toBe(0);
+  });
+});
+
 describe("approver-identity separation (the one real lever)", () => {
   it("approve_action IS registered so interactive human sessions (e.g. Cowork) can approve held actions", () => {
     expect(Object.keys(governanceTools)).toContain("approve_action");

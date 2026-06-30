@@ -22,6 +22,7 @@
 import type { ToolContext } from "../types/context.js";
 import type { ProposedAction } from "../tools/playbooks/risk.js";
 import { actionHash, verifyAndConsumeClearance } from "../tools/governance/index.js";
+import { recordDispatchFinding } from "../tools/governance/reconcile.js";
 import { parseConnectorTool, type RunnerCanUseTool } from "./runner.js";
 import { checkConnectorCapability, type ConnectorPolicy } from "./connector-policy.js";
 
@@ -71,7 +72,18 @@ export function makeVerifyClearanceDecision(
       actionHash: hash,
     });
 
-    if (result.allowed) return { behavior: "allow" };
+    if (result.allowed) {
+      // Reconcile-at-dispatch (T2.4): record the governed send now, matched
+      // to the clearance just consumed, so no later fetch-and-diff is needed.
+      if (result.jti) {
+        await recordDispatchFinding(ctx, {
+          connector: parsed.connector,
+          jti: result.jti,
+          summary: `Auto-dispatched ${parsed.connector} ${parsed.action}`,
+        });
+      }
+      return { behavior: "allow" };
+    }
     return {
       behavior: "deny",
       message:
