@@ -59,17 +59,19 @@ export async function claimFire(
   fp: string,
   matched: boolean
 ): Promise<boolean> {
-  const patch: Record<string, unknown> = { last_state: fp };
-  if (matched) patch.last_fired_at = new Date().toISOString();
-  const { data, error } = await ctx.db
-    .from("triggers")
-    .update(patch)
-    .eq("company_id", ctx.companyId)
-    .eq("id", triggerId)
-    // IS DISTINCT FROM: matches when last_state is null OR differs.
-    .or(`last_state.is.null,last_state.neq.${fp}`)
-    .select("id")
-    .maybeSingle();
+  // Parameterized claim via the claim_trigger_fire RPC (migration 041).
+  // The function does the atomic conditional UPDATE with the exact
+  // `last_state IS DISTINCT FROM p_fp` semantics, so the fingerprint is a
+  // bound parameter rather than spliced into a PostgREST `.or()` filter
+  // string (review L1). Behaviour is identical to the old conditional
+  // UPDATE: it claims only on a new or worsened state, and bumps
+  // last_fired_at only when the condition actually matched.
+  const { data, error } = await ctx.db.rpc("claim_trigger_fire", {
+    p_company_id: ctx.companyId,
+    p_trigger_id: triggerId,
+    p_fp: fp,
+    p_matched: matched,
+  });
   if (error) throw new Error(`Fire-claim failed for trigger ${triggerId}: ${error.message}`);
   return Boolean(data);
 }

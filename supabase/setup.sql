@@ -1168,6 +1168,70 @@ create table notifications (
 create index idx_notifications_unread on notifications (company_id) where read_at is null;
 
 
+-- ── Agent run lock (migration 041) ───────────────────────────
+-- Per-company run lock for the headless full run, so two overlapping
+-- `founders-os-tick run --execute` ticks do not both drive the model over
+-- the same backlog. Table-level (not pg_advisory_lock) because the Supabase
+-- pooler cannot hold a session lock across a run. TTL lets a crashed run's
+-- lock be stolen by acquire_agent_run_lock rather than wedging forever.
+
+create table agent_run_locks (
+  company_id  text        primary key default 'default',
+  run_id      text        not null,
+  locked_at   timestamptz not null default now()
+);
+
+-- acquire_agent_run_lock: true when p_run_id holds the company lock after
+-- the call. Acquires when free or the existing lock is stale (older than
+-- p_ttl_seconds); false when a fresh lock is held by a different run.
+create or replace function acquire_agent_run_lock(
+  p_company_id  text,
+  p_run_id      text,
+  p_ttl_seconds int default 3600
+) returns boolean
+set search_path = public
+as $$
+declare owns boolean;
+begin
+  insert into agent_run_locks (company_id, run_id, locked_at)
+    values (p_company_id, p_run_id, now())
+  on conflict (company_id) do update
+    set run_id = excluded.run_id, locked_at = now()
+    where agent_run_locks.locked_at < now() - make_interval(secs => p_ttl_seconds);
+
+  select exists(
+    select 1 from agent_run_locks
+    where company_id = p_company_id and run_id = p_run_id
+  ) into owns;
+  return owns;
+end;
+$$ language plpgsql;
+
+-- claim_trigger_fire: atomic conditional fire-claim. Moves last_state to
+-- p_fp only when it differs (IS DISTINCT FROM, including first-ever null);
+-- bumps last_fired_at only when matched. True when this call claimed it.
+create or replace function claim_trigger_fire(
+  p_company_id text,
+  p_trigger_id uuid,
+  p_fp         text,
+  p_matched    boolean
+) returns boolean
+set search_path = public
+as $$
+declare affected int;
+begin
+  update triggers
+    set last_state = p_fp,
+        last_fired_at = case when p_matched then now() else last_fired_at end
+    where company_id = p_company_id
+      and id = p_trigger_id
+      and last_state is distinct from p_fp;
+  get diagnostics affected = row_count;
+  return affected > 0;
+end;
+$$ language plpgsql;
+
+
 -- ============================================================
 -- RSS SCHEMA
 -- ============================================================
@@ -1468,6 +1532,7 @@ alter table pending_approvals       enable row level security;
 alter table reconciliation_findings enable row level security;
 alter table trigger_fires           enable row level security;
 alter table notifications           enable row level security;
+alter table agent_run_locks         enable row level security;
 
 -- Deny-all for authenticated role on every table
 create policy "deny authenticated - customers"
@@ -1524,6 +1589,8 @@ create policy "deny authenticated - trigger_fires"
   on trigger_fires for all to authenticated using (false) with check (false);
 create policy "deny authenticated - notifications"
   on notifications for all to authenticated using (false) with check (false);
+create policy "deny authenticated - agent_run_locks"
+  on agent_run_locks for all to authenticated using (false) with check (false);
 
 -- ============================================================
 -- RLS AUTO-ENABLE (safety net)
@@ -1622,6 +1689,7 @@ grant select, insert, update, delete on public.pending_approvals      to service
 grant select, insert, update, delete on public.reconciliation_findings to service_role, authenticated;
 grant select, insert, update, delete on public.trigger_fires          to service_role, authenticated;
 grant select, insert, update, delete on public.notifications          to service_role, authenticated;
+grant select, insert, update, delete on public.agent_run_locks        to service_role, authenticated;
 
 -- Views (3)
 grant select on public.customer_summary                 to service_role, authenticated;
@@ -1635,6 +1703,8 @@ grant usage, select on all sequences in schema public to service_role, authentic
 grant execute on function create_financial_transaction(
   text, date, text, numeric, uuid, uuid, uuid, boolean, uuid
 ) to anon, authenticated, service_role;
+grant execute on function acquire_agent_run_lock(text, text, int) to service_role, authenticated;
+grant execute on function claim_trigger_fire(text, uuid, text, boolean) to service_role, authenticated;
 
 -- ============================================================
 -- SCHEMA VERSION MARKER
@@ -1667,11 +1737,11 @@ $$;
 
 grant select, insert, update, delete on public.founders_os_meta to service_role, authenticated;
 
--- 40 = adds the notifications inbox (migration 040). Keep in lockstep
--- with EXPECTED_SCHEMA_VERSION in packages/core/src/schema-version.ts
--- (schema-version-lint.test.ts enforces this).
+-- 41 = adds the agent run lock + claim_trigger_fire RPC (migration 041).
+-- Keep in lockstep with EXPECTED_SCHEMA_VERSION in
+-- packages/core/src/schema-version.ts (schema-version-lint.test.ts enforces this).
 insert into founders_os_meta (key, value)
-  values ('schema_version', '40')
+  values ('schema_version', '41')
   on conflict (key) do nothing;
 
 -- ============================================================

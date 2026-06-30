@@ -26,7 +26,14 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { buildContext, buildAutonomousContext, evaluateDataTriggers, runHoldOnly } from "@ourthinktank/founders-os-core";
+import {
+  buildContext,
+  buildAutonomousContext,
+  evaluateDataTriggers,
+  runHoldOnly,
+  runFull,
+  readAgentModelConfigFromEnv,
+} from "@ourthinktank/founders-os-core";
 
 // Exit codes: 0 clean, 1 config/runtime failure, 2 usage error.
 const EXIT_OK = 0;
@@ -39,16 +46,18 @@ interface Args {
   dry: boolean;
   quiet: boolean;
   holdOnly: boolean;
+  execute: boolean;
   conditions?: string[];
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false };
+  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false, execute: false };
   for (const a of argv.slice(1)) {
     if (a === "--json") args.json = true;
     else if (a === "--dry") args.dry = true;
     else if (a === "--quiet") args.quiet = true;
     else if (a === "--hold-only") args.holdOnly = true;
+    else if (a === "--execute") args.execute = true;
     else if (a.startsWith("--conditions=")) {
       args.conditions = a.slice("--conditions=".length).split(",").map((s) => s.trim()).filter(Boolean);
     }
@@ -75,6 +84,7 @@ const USAGE = `founders-os-tick — local scheduler for Founders OS triggers
 Usage:
   founders-os-tick detect [options]      Run data-condition detection, write the inbox
   founders-os-tick run --hold-only [opts] Drain the inbox: stage every fire for human review, perform nothing
+  founders-os-tick run --execute [opts]   Model-driven full run (detect + withhold + record + reconcile)
   founders-os-tick --version
   founders-os-tick --help
 
@@ -85,10 +95,15 @@ detect options:
   --quiet            Suppress the human summary line
 
 run options:
-  --hold-only        REQUIRED today. Stage every inbox fire into the approval
-                     queue for a human to approve/edit/reject; never sends or
-                     performs anything. Full run mode (executing allowlisted
-                     actions) is not available yet.
+  --hold-only        Stage every inbox fire into the approval queue for a human
+                     to approve/edit/reject; never sends or performs anything.
+  --execute          Model-driven full run: a model reads each fire and creates
+                     internal follow-ups (tasks, notifications) or stages
+                     external actions for approval. Requires an agent model
+                     (FOUNDERSOS_AGENT_PROVIDER); equivalent to
+                     FOUNDERSOS_TICK_RUN_MODE=full. It does NOT execute external
+                     actions - it detects, withholds, records, and reconciles
+                     for a human to approve.
   --json / --quiet   As above.`;
 
 async function runDetect(args: Args): Promise<number> {
@@ -139,14 +154,95 @@ async function runDetect(args: Args): Promise<number> {
   }
 }
 
+/**
+ * Dispatch `run` to the right mode. Full run is reached ONLY when both an
+ * explicit opt-in (--execute or FOUNDERSOS_TICK_RUN_MODE=full) AND a
+ * configured agent model are present, so it can never be flipped on by a
+ * flag alone without also provisioning a model. Otherwise --hold-only is
+ * the supported posture; bare `run` is refused.
+ */
+async function runRun(args: Args): Promise<number> {
+  const fullRequested = args.execute || process.env.FOUNDERSOS_TICK_RUN_MODE === "full";
+
+  if (fullRequested) {
+    const agentConfig = readAgentModelConfigFromEnv();
+    if (!agentConfig) {
+      process.stderr.write(
+        "[tick] full run was requested (--execute / FOUNDERSOS_TICK_RUN_MODE=full) but no agent model " +
+          "is configured. Set FOUNDERSOS_AGENT_PROVIDER (and FOUNDERSOS_AGENT_MODEL + an API key), or " +
+          "use --hold-only to stage without a model.\n"
+      );
+      return EXIT_FAIL;
+    }
+    return runFullMode(args);
+  }
+
+  return runHold(args);
+}
+
+async function runFullMode(args: Args): Promise<number> {
+  const runId = randomUUID();
+  let ctx;
+  try {
+    ctx = buildAutonomousContext(runId);
+  } catch (e) {
+    process.stderr.write(`[tick] config error: ${errMessage(e)}\n`);
+    return EXIT_FAIL;
+  }
+
+  try {
+    const res = await runFull(ctx);
+    const summary = {
+      mode: "run:full",
+      run_id: runId,
+      paused: res.paused,
+      locked_out: res.locked_out,
+      scanned: res.scanned,
+      created: res.created,
+      staged: res.staged,
+      skipped: res.skipped,
+      budget_exhausted: res.budget_exhausted,
+      errors: res.errors.length,
+    };
+
+    if (args.json) {
+      process.stdout.write(JSON.stringify(summary) + "\n");
+    } else if (!args.quiet) {
+      if (res.paused) {
+        process.stdout.write("[tick] run:full: agents are paused company-wide; nothing processed.\n");
+      } else if (res.locked_out) {
+        process.stdout.write("[tick] run:full: another run holds the lock; nothing processed.\n");
+      } else {
+        const parts = [
+          `scanned ${summary.scanned}`,
+          `created ${summary.created}`,
+          `staged ${summary.staged} for review`,
+        ];
+        if (summary.skipped) parts.push(`${summary.skipped} skipped`);
+        if (summary.budget_exhausted) parts.push("action budget exhausted");
+        if (summary.errors) parts.push(`${summary.errors} error(s)`);
+        process.stdout.write(`[tick] run:full: ${parts.join(", ")}\n`);
+      }
+    }
+
+    for (const e of res.errors) {
+      process.stderr.write(`[tick] fire ${e.fire_id}: ${e.error}\n`);
+    }
+    return EXIT_OK;
+  } catch (e) {
+    process.stderr.write(`[tick] run failed: ${errMessage(e)}\n`);
+    return EXIT_FAIL;
+  }
+}
+
 async function runHold(args: Args): Promise<number> {
-  // Full run mode (executing allowlisted actions) is not built yet. Today the
-  // only supported posture is --hold-only: stage everything, perform nothing.
-  // This is enforced here AND by the server (an autonomous principal can never
-  // clear a hold), so it is not a flag an operator can flip to "send".
+  // The model-free posture: stage everything, perform nothing. Enforced here
+  // AND by the server (an autonomous principal can never clear a hold), so it
+  // is not a flag an operator can flip to "send".
   if (!args.holdOnly) {
     process.stderr.write(
-      "[tick] run requires --hold-only. Full run mode (performing allowlisted actions unattended) is not available yet.\n"
+      "[tick] run requires --hold-only (stage everything, perform nothing) or --execute " +
+        "(model-driven full run; needs FOUNDERSOS_AGENT_PROVIDER configured).\n"
     );
     return EXIT_USAGE;
   }
@@ -210,7 +306,7 @@ async function main(): Promise<number> {
     return runDetect(args);
   }
   if (args.command === "run") {
-    return runHold(args);
+    return runRun(args);
   }
 
   process.stderr.write(`[tick] unknown command "${args.command}".\n\n${USAGE}\n`);

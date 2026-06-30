@@ -26,7 +26,7 @@ type Row = Record<string, unknown>;
 
 class FakeQuery {
   private filters: Array<(r: Row) => boolean> = [];
-  private op: "select" | "update" | "insert" = "select";
+  private op: "select" | "update" | "insert" | "delete" = "select";
   private patch: Row | null = null;
   private inserted: Row[] = [];
   private orderCol: string | null = null;
@@ -51,6 +51,7 @@ class FakeQuery {
   or(): this { return this; }
 
   update(p: Row): this { this.op = "update"; this.patch = p; return this; }
+  delete(): this { this.op = "delete"; return this; }
   insert(p: Row | Row[]): this {
     this.op = "insert";
     for (const row of Array.isArray(p) ? p : [p]) {
@@ -83,6 +84,13 @@ class FakeQuery {
       for (const t of targets) Object.assign(t, this.patch);
       return resolve({ data: targets.map((r) => ({ ...r })), error: null });
     }
+    if (this.op === "delete") {
+      const all = this.rows();
+      const removed = this.matched();
+      const keep = all.filter((r) => !removed.includes(r));
+      this.store.set(this.table, keep);
+      return resolve({ data: removed.map((r) => ({ ...r })), error: null });
+    }
     let rows = this.matched().map((r) => ({ ...r }));
     if (this.orderCol) rows = rows.sort((a, b) => String(a[this.orderCol!]).localeCompare(String(b[this.orderCol!])));
     if (this.limitN != null) rows = rows.slice(0, this.limitN);
@@ -93,6 +101,27 @@ class FakeQuery {
 class FakeDb {
   constructor(public store: Map<string, Row[]>) {}
   from(t: string): FakeQuery { return new FakeQuery(this.store, t); }
+
+  // Models acquire_agent_run_lock (migration 041): claim when free or the
+  // existing lock is stale; refuse when a fresh lock is held by another run.
+  async rpc(name: string, params: Record<string, unknown>): Promise<{ data: unknown; error: null }> {
+    if (name === "acquire_agent_run_lock") {
+      const locks = this.store.get("agent_run_locks") ?? [];
+      this.store.set("agent_run_locks", locks);
+      const existing = locks.find((l) => l.company_id === params.p_company_id);
+      const ttlMs = (Number(params.p_ttl_seconds) || 3600) * 1000;
+      if (!existing) {
+        locks.push({ company_id: params.p_company_id, run_id: params.p_run_id, locked_at: new Date().toISOString() });
+        return { data: true, error: null };
+      }
+      const fresh = Date.now() - new Date(String(existing.locked_at)).getTime() < ttlMs;
+      if (fresh && existing.run_id !== params.p_run_id) return { data: false, error: null };
+      existing.run_id = params.p_run_id;
+      existing.locked_at = new Date().toISOString();
+      return { data: true, error: null };
+    }
+    return { data: null, error: null };
+  }
 }
 
 function autonomousCtx(store: Map<string, Row[]>): ToolContext {
@@ -254,5 +283,35 @@ describe("runFull — guards", () => {
     seedFires(store, 1);
     const ctx = autonomousCtx(store);
     await expect(runFull(ctx)).rejects.toThrow(/requires an agent model/);
+  });
+
+  it("does nothing when another run holds a fresh company lock", async () => {
+    const store = new Map<string, Row[]>();
+    seedFires(store, 1);
+    // A different run already holds a fresh lock.
+    store.set("agent_run_locks", [
+      { company_id: "default", run_id: "other-run", locked_at: new Date().toISOString() },
+    ]);
+    const ctx = autonomousCtx(store);
+    const res = await runFull(ctx, { model: new MockAgentModel([createTaskCall("c", "x"), done]) });
+
+    expect(res.locked_out).toBe(true);
+    expect(res.scanned).toBe(0);
+    expect((store.get("tasks") ?? [])).toHaveLength(0);
+    expect((store.get("trigger_fires") ?? [])[0].status).toBe("pending");
+    // The other run's lock is untouched.
+    expect((store.get("agent_run_locks") ?? [])[0].run_id).toBe("other-run");
+  });
+
+  it("acquires and releases the lock around a normal run", async () => {
+    const store = new Map<string, Row[]>();
+    seedFires(store, 1);
+    const ctx = autonomousCtx(store);
+    const res = await runFull(ctx, { model: new MockAgentModel([createTaskCall("c", "t"), done]) });
+
+    expect(res.locked_out).toBe(false);
+    expect(res.created).toBe(1);
+    // Lock released on completion so the next tick runs immediately.
+    expect((store.get("agent_run_locks") ?? [])).toHaveLength(0);
   });
 });

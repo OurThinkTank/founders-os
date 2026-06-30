@@ -111,6 +111,23 @@ class FakeQuery {
 class FakeDb {
   constructor(public store: Map<string, Row[]>) {}
   from(t: string): FakeQuery { return new FakeQuery(this.store, t); }
+
+  // Models the claim_trigger_fire RPC (migration 041): atomic conditional
+  // claim with last_state IS DISTINCT FROM p_fp.
+  async rpc(name: string, params: Record<string, unknown>): Promise<{ data: unknown; error: null }> {
+    if (name === "claim_trigger_fire") {
+      const rows = this.store.get("triggers") ?? [];
+      const t = rows.find(
+        (r) => r.company_id === params.p_company_id && r.id === params.p_trigger_id
+      );
+      if (!t) return { data: false, error: null };
+      if (t.last_state === params.p_fp) return { data: false, error: null }; // not distinct
+      t.last_state = params.p_fp;
+      if (params.p_matched) t.last_fired_at = new Date().toISOString();
+      return { data: true, error: null };
+    }
+    return { data: null, error: null };
+  }
 }
 
 function makeCtx(store: Map<string, Row[]>): ToolContext {

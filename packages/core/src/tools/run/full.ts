@@ -58,11 +58,16 @@ export interface FullRunResult {
   skipped: number;
   /** True when the company-wide kill switch is on; the run did nothing. */
   paused: boolean;
+  /** True when another run held the company run lock; this run did nothing. */
+  locked_out: boolean;
   /** True when the global action budget was exhausted mid-run. */
   budget_exhausted: boolean;
   /** Per-fire failures (isolated, not fatal). */
   errors: Array<{ fire_id: string; error: string }>;
 }
+
+/** Run-lock TTL: longer than any plausible run, so a crash self-heals next tick. */
+const RUN_LOCK_TTL_SECONDS = 3600;
 
 const SYSTEM_PROMPT =
   "You are triaging the watches that fired while the founder was away. " +
@@ -114,15 +119,12 @@ export async function runFull(
     model?: AgentModel;
   } = {}
 ): Promise<FullRunResult> {
-  const maxActions = opts.maxActions ?? 20;
-  const maxStepsPerFire = opts.maxStepsPerFire ?? 4;
-
   // Kill switch: if agents are paused company-wide, do nothing at all.
   const policy = await loadPolicy(ctx);
   if (policy.paused) {
     return {
       scanned: 0, created: 0, staged: 0, skipped: 0,
-      paused: true, budget_exhausted: false, errors: [],
+      paused: true, locked_out: false, budget_exhausted: false, errors: [],
     };
   }
 
@@ -135,6 +137,49 @@ export async function runFull(
         "Set FOUNDERSOS_AGENT_PROVIDER (and a model + key) before --execute."
     );
   }
+
+  // Per-company run lock: if another tick is already driving the model over
+  // this backlog, do nothing rather than double-process (and double-spend).
+  // A stale lock (older than the TTL, e.g. from a crashed run) is stolen.
+  const runId = ctx.actor && ctx.actor.kind === "autonomous" ? ctx.actor.runId : "run";
+  const { data: acquired, error: lockErr } = await ctx.db.rpc("acquire_agent_run_lock", {
+    p_company_id: ctx.companyId,
+    p_run_id: runId,
+    p_ttl_seconds: RUN_LOCK_TTL_SECONDS,
+  });
+  if (lockErr) throw new Error(`Failed to acquire run lock: ${lockErr.message}`);
+  if (!acquired) {
+    return {
+      scanned: 0, created: 0, staged: 0, skipped: 0,
+      paused: false, locked_out: true, budget_exhausted: false, errors: [],
+    };
+  }
+
+  try {
+    return await drainInbox(ctx, model, opts);
+  } finally {
+    // Release our lock so the next scheduled tick can run immediately.
+    // Scoped to our run_id so we never delete a lock the TTL handed to a
+    // later run that stole it after a crash.
+    await ctx.db
+      .from("agent_run_locks")
+      .delete()
+      .eq("company_id", ctx.companyId)
+      .eq("run_id", runId);
+  }
+}
+
+/**
+ * The lock-protected core: drain the pending inbox with the model. Split
+ * from runFull so the lock acquire/release brackets exactly this work.
+ */
+async function drainInbox(
+  ctx: ToolContext,
+  model: AgentModel,
+  opts: { maxActions?: number; maxStepsPerFire?: number; limit?: number }
+): Promise<FullRunResult> {
+  const maxActions = opts.maxActions ?? 20;
+  const maxStepsPerFire = opts.maxStepsPerFire ?? 4;
 
   let q = ctx.db
     .from("trigger_fires")
@@ -238,6 +283,7 @@ export async function runFull(
     staged,
     skipped,
     paused: false,
+    locked_out: false,
     budget_exhausted: budgetExhausted,
     errors,
   };
