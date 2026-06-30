@@ -116,8 +116,8 @@ export const defaultRunQuery: RunnerQuery = async function* (
   } catch {
     throw new Error(
       "The Agent SDK runner needs @anthropic-ai/claude-agent-sdk (an optional dependency). " +
-        "Install it to enable `run --execute`: npm install @anthropic-ai/claude-agent-sdk --legacy-peer-deps " +
-        "(its zod 4 peer is not used by this code path). Or set FOUNDERSOS_TICK_RUNNER=inprocess for the fallback runner."
+        "Install it to enable `run --execute`: npm install @anthropic-ai/claude-agent-sdk. " +
+        "Or set FOUNDERSOS_TICK_RUNNER=inprocess for the fallback runner."
     );
   }
   const stream = sdk.query({

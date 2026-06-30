@@ -21,7 +21,7 @@
 // absent from the map.
 // ============================================================
 
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import type { ToolDefinition, ToolMap } from "../tools/register.js";
 import type { AgentTool } from "./model.js";
 
@@ -121,16 +121,19 @@ export function buildAgentToolRegistry(): Record<AgentToolName, ToolDefinition> 
 
 /**
  * Build the AgentTool[] the model sees: each allowlisted tool's Zod
- * parameters converted to self-contained JSON Schema. Refs are inlined
- * ($refStrategy: "none") so each tool's inputSchema stands alone, which
- * the model tool-use APIs expect.
+ * parameters converted to self-contained JSON Schema via zod 4's native
+ * z.toJSONSchema. Reused schemas are inlined by default (no $ref), so each
+ * tool's inputSchema stands alone, which the model tool-use APIs expect.
+ * unrepresentable: "any" keeps an exotic field from throwing (it becomes
+ * {} rather than failing the whole conversion).
  */
 export function buildAgentTools(): AgentTool[] {
   const registry = buildAgentToolRegistry();
   return AGENT_TOOL_ALLOWLIST.map((name) => {
     const def = registry[name];
-    const inputSchema = zodToJsonSchema(def.parameters, {
-      $refStrategy: "none",
+    const inputSchema = z.toJSONSchema(def.parameters, {
+      target: "draft-7",
+      unrepresentable: "any",
     }) as object;
     return { name, description: def.description, inputSchema };
   });

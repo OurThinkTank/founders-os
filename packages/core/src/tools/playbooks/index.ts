@@ -454,7 +454,7 @@ export const playbookTools: ToolMap = {
           "For external_action: the action to perform, e.g. 'create_repo', 'create_channel'."
         ),
       params: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "For external_action: connector-specific parameters. Supports {{placeholders}}. " +
@@ -1042,7 +1042,7 @@ export const playbookTools: ToolMap = {
       priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       connector: z.string().optional(),
       action: z.string().optional(),
-      params: z.record(z.unknown()).optional().describe("Updated connector params."),
+      params: z.record(z.string(), z.unknown()).optional().describe("Updated connector params."),
       fallback_task: z.string().optional().describe("Updated fallback task title."),
     }),
     handler: async (ctx: ToolContext, rawParams: {

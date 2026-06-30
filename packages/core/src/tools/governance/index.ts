@@ -65,7 +65,7 @@ const proposedActionSchema = z.object({
     .nullish()
     .describe("Connector verb, e.g. 'send_message', 'create_charge', 'delete_customer'."),
   params: z
-    .record(z.unknown())
+    .record(z.string(), z.unknown())
     .nullish()
     .describe("Action parameters. May contain {{placeholder}} tokens resolved via template_context."),
   summary: z
@@ -539,7 +539,7 @@ export const governanceTools: ToolMap = {
     parameters: z.object({
       action: proposedActionSchema,
       template_context: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe("Values used to resolve {{placeholder}} tokens in action.params, e.g. { customer: { email: 'a@b.com' } }."),
       source: z
@@ -908,7 +908,7 @@ export const governanceTools: ToolMap = {
       "Update the governance policy. Pass any of: tier_outcomes (a partial map of tier -> allow|allow_with_log|hold_for_approval), dry_run (hold and log every action), paused (kill switch). Refuses to lower destructive or exfiltration below hold_for_approval. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({
       tier_outcomes: z
-        .record(z.string())
+        .record(z.string(), z.string())
         .optional()
         .describe("Partial map, e.g. { external_write: 'allow_with_log' }. destructive/exfiltration cannot be lowered."),
       dry_run: z.boolean().optional().describe("When true, every action is held and logged regardless of tier."),

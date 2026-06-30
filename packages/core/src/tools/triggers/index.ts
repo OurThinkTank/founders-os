@@ -136,10 +136,10 @@ export const triggerTools: ToolMap = {
       ]).describe("What to watch for."),
       condition_source: z.enum(["data", "connector"]).optional().describe("'data' (default) or 'connector'."),
       connector: z.string().optional().describe("Required when condition_source is 'connector' (e.g. 'stripe')."),
-      params: z.record(z.unknown()).optional().describe("Condition params, e.g. { days: 14 } or { threshold_cents: 500000, window_days: 30 }."),
+      params: z.record(z.string(), z.unknown()).optional().describe("Condition params, e.g. { days: 14 } or { threshold_cents: 500000, window_days: 30 }."),
       action_type: z.enum(["run_playbook", "create_task", "notify"]).optional().describe("What to do when it fires. Default run_playbook."),
       playbook_id: z.string().uuid().optional().describe("Required when action_type is run_playbook. Must belong to this company."),
-      action_params: z.record(z.unknown()).optional().describe("Templated action params; resolved + classified inside preview_action when the action runs."),
+      action_params: z.record(z.string(), z.unknown()).optional().describe("Templated action params; resolved + classified inside preview_action when the action runs."),
       cadence_hint: z.enum(["hourly", "daily", "weekly"]).optional().describe("Advisory check cadence. Default daily."),
       scope: z.enum(["org", "personal"]).optional().describe("Default org. For the task conditions (overdue_task, stuck_task), 'personal' restricts evaluation to the owner's tasks (assigned to OR created by owner_id). For deal/spend conditions, which have no per-user owner, 'personal' is a label only and the watch still evaluates company-wide."),
       owner_id: z.string().optional().describe("Owner for a personal-scope watch. Defaults to the creator when scope is 'personal'. The watch fires only on tasks assigned to OR created by this owner (task conditions only)."),
@@ -240,11 +240,11 @@ export const triggerTools: ToolMap = {
     parameters: z.object({
       trigger_id: z.string().uuid().describe("The trigger to update."),
       enabled: z.boolean().optional(),
-      params: z.record(z.unknown()).optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
       cadence_hint: z.enum(["hourly", "daily", "weekly"]).optional(),
       action_type: z.enum(["run_playbook", "create_task", "notify"]).optional(),
       playbook_id: z.string().uuid().optional(),
-      action_params: z.record(z.unknown()).optional(),
+      action_params: z.record(z.string(), z.unknown()).optional(),
     }),
     handler: async (ctx: ToolContext, p: {
       trigger_id: string; enabled?: boolean; params?: Record<string, unknown>;
