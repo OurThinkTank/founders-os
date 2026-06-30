@@ -625,6 +625,11 @@ export const governanceTools: ToolMap = {
         summary,
         reasons: assessment.reasons,
         confirm_token: token,
+        // Surfaced so the agent can stamp this jti into the outbound connector
+        // call (idempotency key / caller metadata) for an EXACT reconcile match.
+        // The held path already returns its jti as approval_id; allow tiers had
+        // no jti to stamp, forcing reconcile onto the fuzzy connector heuristic.
+        jti,
         held: false,
         resolved_action: resolved,
         risk_breakdown,
@@ -722,11 +727,27 @@ export const governanceTools: ToolMap = {
       }
 
       // No held row: allow / allow_with_log tier. Token validity is enough.
+      // Record action_type + connector + summary alongside the jti so
+      // reconcile can account for this gated allow-tier execution: there is
+      // no executed pending_approvals row to match against, so the audit
+      // entry IS the governed record. Without the connector here, a properly
+      // gated allow_with_log side effect would reconcile as a false
+      // "ungoverned" finding (see reconcileActivities).
+      const actionType = `${resolved.kind}:${resolved.connector ?? "founders-os"}:${resolved.action ?? "action"}`;
       await writeAuditLog(ctx, {
         action: "action_executed",
         entity_type: "action",
         entity_id: hash,
-        metadata: { tier: v.payload.tier, jti: v.payload.jti, held: false },
+        metadata: {
+          tier: v.payload.tier,
+          jti: v.payload.jti,
+          held: false,
+          action_type: actionType,
+          connector: resolved.connector ?? null,
+          summary:
+            resolved.summary ??
+            `${resolved.kind === "external" ? resolved.connector ?? "connector" : "Founders OS"} ${resolved.action ?? "action"}`,
+        },
       });
       return {
         cleared: true,

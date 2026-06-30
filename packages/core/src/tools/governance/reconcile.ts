@@ -4,9 +4,18 @@
 // The gate cannot prevent an action, so reconcile is what converts
 // "we cannot prevent" into "we will always find out." It takes the
 // recent activity of a connector (Slack messages the agent sent, Stripe
-// charges it created) and diffs it against what the gate recorded
-// (executed approvals + the audit log). Any external side effect with
-// no matching approved-and-executed action is flagged UNGOVERNED.
+// charges it created) and diffs it against what the gate recorded. Any
+// external side effect with no matching governed action is flagged
+// UNGOVERNED.
+//
+// THE GOVERNED RECORD HAS TWO HALVES, and reconcile reads BOTH:
+//   - HELD tiers leave an `executed` pending_approvals row (a human
+//     approved it, execute_action flipped it to executed).
+//   - ALLOW / ALLOW_WITH_LOG tiers leave NO approval row - execute_action
+//     records only an `action_executed` audit_log entry (held=false). A
+//     founder may lower external_write to allow_with_log (a supported
+//     move), so reconcile MUST account for these or it would false-flag a
+//     properly gated allow-tier side effect as off-book.
 //
 // The server has no handle to the connector, so it cannot pull the
 // activity itself: the AGENT fetches it and passes it in, exactly like
@@ -66,14 +75,45 @@ export async function reconcileActivities(
   connector: string,
   activities: ObservedActivity[]
 ): Promise<{ findings: Finding[]; matched: number; unverified: number; ungoverned: number }> {
-  // Pull executed approvals once; match candidates against them.
+  // Half 1: executed approvals (held tiers that a human cleared).
   const { data, error } = await ctx.db
     .from("pending_approvals")
     .select("id, jti, action_type, summary")
     .eq("company_id", ctx.companyId)
     .eq("status", "executed");
   if (error) throw new Error(`Failed to load executed approvals: ${error.message}`);
-  const executed = (data ?? []) as ExecutedApproval[];
+  const executedApprovals = (data ?? []) as ExecutedApproval[];
+
+  // Half 2: allow-tier executions, which live only in the audit log
+  // (execute_action's no-held-row branch writes action_executed with
+  // held=false). Read via ctx.admin: audit_log is integrity-critical and
+  // may be RLS-restricted from a user-scoped ctx.db in hosted mode, so we
+  // read it the same way writeAuditLog writes it, scoped by company_id.
+  // (Held executions also emit action_executed but with held=true; we keep
+  // only held===false so they are not double-counted against Half 1.)
+  // NOTE: this scans the company's action_executed history; audit_log
+  // retention/partitioning (tracked separately) will bound it over time.
+  const { data: auditData, error: auditErr } = await ctx.admin
+    .from("audit_log")
+    .select("entity_id, metadata")
+    .eq("company_id", ctx.companyId)
+    .eq("action", "action_executed");
+  if (auditErr) throw new Error(`Failed to load allow-tier executions: ${auditErr.message}`);
+  const allowTierExecutions: ExecutedApproval[] = (
+    (auditData ?? []) as Array<{ entity_id: string; metadata: Record<string, unknown> | null }>
+  )
+    .filter((r) => r.metadata?.held === false && typeof r.metadata?.jti === "string")
+    .map((r) => ({
+      // Key on the jti (unique per action) so an allow-tier record can never
+      // collide with a held approval's id and both consume independently.
+      id: r.metadata!.jti as string,
+      jti: r.metadata!.jti as string,
+      action_type: (r.metadata!.action_type as string) ?? "",
+      summary: (r.metadata!.summary as string) ?? "",
+    }));
+
+  // One pool of governed records to match observed side effects against.
+  const executed = [...executedApprovals, ...allowTierExecutions];
 
   const byJti = new Map(executed.map((e) => [e.jti, e]));
   const connectorTag = `:${connector}:`;

@@ -491,6 +491,50 @@ describe("reconcile — turns 'cannot prevent' into 'cannot hide'", () => {
     expect(r.unverified_count).toBe(1); // one approval consumed as unverified
     expect(r.ungoverned_count).toBe(1); // the second has nothing left to back it
   });
+
+  // M1: a gated allow_with_log external action leaves NO executed approval
+  // row, only an action_executed audit entry. Reconcile must treat it as
+  // governed, not a false off-book finding. (The review flagged this path as
+  // untested; it is the hard prerequisite before the first external connector
+  // is added to the allowlist at allow_with_log.)
+  it("M1: an allow_with_log execution reconciles as governed via the stamped jti (exact)", async () => {
+    const ctx = makeCtx();
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text: "renewal note" }, summary: "Posted renewal note" } });
+    expect(p.outcome).toBe("allow_with_log");
+    expect(p.held).toBe(false);
+    expect(p.jti).toBeTruthy(); // surfaced so the agent can stamp it
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+
+    const r = await reconcile(ctx, { connector: "slack", activities: [{ external_ref: "ts-7", jti: p.jti, summary: "msg" }] });
+    expect(r.matched).toBe(1);
+    expect(r.ungoverned_count).toBe(0);
+    expect(r.findings[0].matched_approval).toBe(p.jti);
+  });
+
+  it("M1: an allow_with_log execution reconciles by connector heuristic when no jti is stamped", async () => {
+    const ctx = makeCtx();
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text: "renewal note" } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+
+    // Connector supports no idempotency key, so the agent could not stamp a jti.
+    const r = await reconcile(ctx, { connector: "slack", activities: [{ external_ref: "ts-8", summary: "msg, no jti" }] });
+    expect(r.ungoverned_count).toBe(0);
+    expect(r.unverified_count).toBe(1); // a governed allow-tier action plausibly accounts for it
+  });
+
+  it("M1: an off-book side effect is still ungoverned even when an allow-tier execution exists for a DIFFERENT connector", async () => {
+    const ctx = makeCtx();
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text: "hi" } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+
+    // A stripe charge with nothing governing it must still be flagged.
+    const r = await reconcile(ctx, { connector: "stripe", activities: [{ external_ref: "ch_off", summary: "charge off-book" }] });
+    expect(r.ungoverned_count).toBe(1);
+    expect(r.findings[0].status).toBe("ungoverned");
+  });
 });
 
 describe("approver-identity separation (the one real lever)", () => {
