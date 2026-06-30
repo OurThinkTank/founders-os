@@ -119,8 +119,10 @@ describe("readAgentModelConfigFromEnv", () => {
 describe("getAgentModel factory", () => {
   afterEach(() => _resetAgentModelForTesting());
 
-  it("throws not-implemented for the real providers (arrive in 2b.3)", () => {
+  it("constructs a provider without throwing (key is only needed at turn time)", () => {
     const cfg: AgentModelConfig = { provider: "anthropic", model: "claude-sonnet-4-6", maxTokens: 4096 };
-    expect(() => getAgentModel(cfg)).toThrow(/not implemented yet/);
+    const model = getAgentModel(cfg);
+    expect(model.model).toBe("claude-sonnet-4-6");
+    expect(typeof model.turn).toBe("function");
   });
 });

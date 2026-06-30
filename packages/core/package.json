@@ -29,11 +29,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.107.0",
     "@aws-sdk/client-bedrock-runtime": "^3.800.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@supabase/supabase-js": "^2.49.4",
     "openai": "^4.100.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

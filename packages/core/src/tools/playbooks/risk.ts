@@ -285,13 +285,18 @@ export interface ActionAssessment {
 }
 
 /**
- * Flatten an action into one scannable string. Resolved params are
- * JSON-stringified so a sensitive value nested anywhere in the params
- * is still seen by the detectors.
+ * Flatten an action into one scannable string from its STRUCTURED fields
+ * only — connector, action verb, and resolved params (JSON-stringified so
+ * a sensitive value nested anywhere in the params is still seen). The
+ * free-prose `summary` is deliberately NOT scanned: it is display text,
+ * and an unattended model authors the summary for its own action, so a
+ * descriptive phrase like "email the client about the $4,000 renewal"
+ * must not manufacture an email/financial/exfiltration escalation when
+ * the params carry nothing sensitive (review M4). The summary still rides
+ * the approval surface for the human; it just no longer drives the tier.
  */
 function actionText(action: ProposedAction): string {
   return [
-    action.summary ?? "",
     action.action ?? "",
     action.connector ?? "",
     action.params ? JSON.stringify(action.params) : "",

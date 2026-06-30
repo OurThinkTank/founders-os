@@ -11,7 +11,7 @@
 // ============================================================
 
 // ---- Tool contract ----
-export { registerToolMap } from "./tools/register.js";
+export { registerToolMap, callTool } from "./tools/register.js";
 export type {
   ToolMap,
   ToolDefinition,
@@ -88,9 +88,13 @@ export { notificationTools } from "./tools/notifications/index.js";
 export { evaluateDataTriggers } from "./tools/triggers/evaluate.js";
 export { runHoldOnly } from "./tools/run/hold-only.js";
 export type { HoldOnlyResult } from "./tools/run/hold-only.js";
+export { runFull } from "./tools/run/full.js";
+export type { FullRunResult } from "./tools/run/full.js";
 export {
   getAgentModel,
   MockAgentModel,
+  AnthropicAgentModel,
+  OpenAIAgentModel,
   _resetAgentModelForTesting,
 } from "./agent/model.js";
 export type {
@@ -100,6 +104,12 @@ export type {
   AgentToolCall,
   AgentTurn,
 } from "./agent/model.js";
+export {
+  AGENT_TOOL_ALLOWLIST,
+  buildAgentToolRegistry,
+  buildAgentTools,
+} from "./agent/allowlist.js";
+export type { AgentToolName } from "./agent/allowlist.js";
 export type {
   DataFire,
   EvaluateDataResult,

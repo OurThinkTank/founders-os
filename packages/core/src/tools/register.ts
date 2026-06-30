@@ -56,6 +56,65 @@ export type ToolDefinition = {
 export type ToolMap = Record<string, ToolDefinition>;
 
 /**
+ * A handler is contextual (receives a ToolContext as its first arg) when
+ * it declares two or more parameters. One-arg handlers are legacy and read
+ * env vars inline. This is the single source of truth for the arity test
+ * that both registerToolMap and callTool depend on.
+ */
+function isContextualHandler(handler: LegacyHandler | ContextualHandler): boolean {
+  return handler.length >= 2;
+}
+
+/**
+ * Invoke a tool handler, routing the ToolContext to contextual handlers
+ * and omitting it for legacy ones. Throws if a contextual handler is
+ * invoked without a ctx (the same loud failure registerToolMap guards at
+ * registration time). The shared dispatch mechanics live here so the MCP
+ * server and the headless agent (callTool) cannot drift apart.
+ */
+async function invokeHandler(
+  tool: ToolDefinition,
+  ctx: ToolContext | undefined,
+  args: unknown
+): Promise<unknown> {
+  if (isContextualHandler(tool.handler)) {
+    if (!ctx) {
+      throw new Error(
+        "invokeHandler: contextual tool invoked without a ToolContext."
+      );
+    }
+    return (tool.handler as ContextualHandler)(ctx, args as never);
+  }
+  return (tool.handler as LegacyHandler)(args as never);
+}
+
+/**
+ * Dispatch a single tool call in-process and return its result as a JSON
+ * string. This is the seam the headless agent runner (Phase 2b.5) uses to
+ * reach the exact same handlers the MCP server registers, without speaking
+ * MCP to itself. Success returns the JSON-stringified handler result; a
+ * thrown error is caught and returned as {"error": message, "isError": true}
+ * so one failing tool call never throws out of the agent loop.
+ *
+ * Note: this intentionally does NOT run the MCP-server-only presentation
+ * steps (date enrichment, the rendering-contract reminder). Those shape a
+ * response for a human-facing client; the model consumes raw JSON.
+ */
+export async function callTool(
+  ctx: ToolContext,
+  tool: ToolDefinition,
+  args: unknown
+): Promise<string> {
+  try {
+    const result = await invokeHandler(tool, ctx, args);
+    return JSON.stringify(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return JSON.stringify({ error: message, isError: true });
+  }
+}
+
+/**
  * B2 - cold-start safety net. When a tool response carries a `render`
  * field, attach the short-form rendering contract reminder alongside
  * it. Plugin-less clients (and sessions that skip get_session_start)
@@ -96,9 +155,8 @@ export function registerToolMap(
 ): void {
   for (const [name, tool] of Object.entries(tools)) {
     const { title, description, parameters, handler } = tool;
-    const isContextual = handler.length >= 2;
 
-    if (isContextual && !ctx) {
+    if (isContextualHandler(handler) && !ctx) {
       throw new Error(
         `registerToolMap: tool "${name}" expects a ToolContext but none was ` +
           `passed. Update the domain's register*Tools(server, ctx) call site.`
@@ -114,9 +172,7 @@ export function registerToolMap(
       },
       async (params) => {
         try {
-          const result = isContextual
-            ? await (handler as ContextualHandler)(ctx!, params as never)
-            : await (handler as LegacyHandler)(params as never);
+          const result = await invokeHandler(tool, ctx, params);
           const withReminder = attachRenderingContractReminder(result);
 
           // Conflict responses are questions, not data - skip date

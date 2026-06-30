@@ -85,6 +85,54 @@ describe("risk classifier — exfiltration (leading)", () => {
   });
 });
 
+describe("risk classifier — summary is display-only, not classified (review M4)", () => {
+  it("a descriptive summary over benign params does NOT escalate to exfiltration", () => {
+    // The unattended model authors this summary for its own action. The
+    // prose mentions an email and a dollar figure, but the resolved params
+    // carry neither. Before M4 the flattened summary tripped the email +
+    // financial detectors and manufactured a red-tier exfiltration hold.
+    const a: ProposedAction = {
+      kind: "external",
+      connector: "slack",
+      action: "send_message",
+      params: { channel: "#sales", text: "Renewal reminder sent." },
+      summary: "Email the client jane.doe@acme.com about the $4,000 renewal",
+    };
+    const r = classifyAction(a);
+    expect(r.tier).toBe("external_write");
+    expect(r.exfiltration).toBe(false);
+    expect(r.emails).toHaveLength(0);
+    expect(r.financial_values).toHaveLength(0);
+  });
+
+  it("real sensitive data in PARAMS still escalates even with a bland summary", () => {
+    // The fix narrows the scan to structured fields; it must not weaken
+    // detection when the sensitive value is actually in the params.
+    const a: ProposedAction = {
+      kind: "external",
+      connector: "slack",
+      action: "send_message",
+      params: { text: "reach jane.doe@acme.com" },
+      summary: "Posting a routine note",
+    };
+    const r = classifyAction(a);
+    expect(r.tier).toBe("exfiltration");
+    expect(r.emails).toContain("jane.doe@acme.com");
+  });
+
+  it("an SSRF host mentioned only in the summary does NOT block the action", () => {
+    const a: ProposedAction = {
+      kind: "external",
+      connector: "http",
+      action: "post_webhook",
+      params: { url: "https://hooks.example.com/abc", body: "ok" },
+      summary: "Calls the internal service at 169.254.169.254 (per the runbook)",
+    };
+    const r = classifyAction(a);
+    expect(r.blocks).toHaveLength(0);
+  });
+});
+
 describe("risk classifier — tiers", () => {
   it("external read verb -> read", () => {
     const r = classifyAction({ kind: "external", connector: "stripe", action: "list_invoices" });

@@ -37,12 +37,19 @@ export interface AgentTool {
 }
 
 /**
- * One message in the running conversation. A `tool_result` carries the
- * JSON-stringified output of a tool the model called on the previous turn,
- * keyed back to that call by toolCallId.
+ * One message in the running conversation.
+ *
+ *   - user:        a plain text prompt.
+ *   - assistant:   the model's prior turn. May carry text, tool calls, or
+ *                  both — the runner pushes back the AgentTurn it received
+ *                  so the provider can reconstruct the tool_use blocks that
+ *                  the following tool_result(s) reference.
+ *   - tool_result: the JSON-stringified output of a tool the model called,
+ *                  keyed back to that call by toolCallId.
  */
 export type AgentMessage =
-  | { role: "user" | "assistant"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content?: string; toolCalls?: AgentToolCall[] }
   | { role: "tool_result"; toolCallId: string; content: string };
 
 /** A single tool invocation the model decided to make this turn. */
@@ -103,14 +110,11 @@ export function getAgentModel(config: AgentModelConfig): AgentModel {
   let provider: AgentModel;
   switch (config.provider) {
     case "anthropic":
+      provider = new AnthropicAgentModel(config);
+      break;
     case "openai":
-      // Real implementations land in Phase 2b.3 (AnthropicAgentModel /
-      // OpenAIAgentModel). Until then, fail loud rather than silently
-      // pretending full run is available.
-      throw new Error(
-        `Agent provider "${config.provider}" is not implemented yet ` +
-          `(arrives in Phase 2b.3). Full run is unavailable.`
-      );
+      provider = new OpenAIAgentModel(config);
+      break;
     default: {
       // Exhaustiveness guard: a new provider in the union must be handled.
       const _never: never = config.provider;
@@ -161,5 +165,231 @@ export class MockAgentModel implements AgentModel {
       return this.script[this.index++];
     }
     return { toolCalls: [], stop: "end" };
+  }
+}
+
+// ── Provider: Anthropic ─────────────────────────────────────────────────────
+// Translates the neutral shapes to and from the Anthropic Messages tool-use
+// dialect. The SDK is imported dynamically (mirroring embed.ts) so this module
+// loads without the SDK present; tests inject a fake client instead.
+
+interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+}
+interface AnthropicResponse {
+  content: AnthropicContentBlock[];
+  stop_reason?: string | null;
+}
+interface AnthropicLikeClient {
+  messages: { create(body: Record<string, unknown>): Promise<AnthropicResponse> };
+}
+
+/** Neutral AgentTool[] -> Anthropic tools. */
+export function toAnthropicTools(tools: AgentTool[]): Array<Record<string, unknown>> {
+  return tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema,
+  }));
+}
+
+/**
+ * Neutral AgentMessage[] -> Anthropic messages. tool_result blocks must ride
+ * in a user message; consecutive tool_results are merged into one user message
+ * so they immediately follow the assistant tool_use turn they answer.
+ */
+export function toAnthropicMessages(
+  messages: AgentMessage[]
+): Array<{ role: "user" | "assistant"; content: unknown }> {
+  const out: Array<{ role: "user" | "assistant"; content: unknown }> = [];
+  for (const m of messages) {
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      const blocks: AnthropicContentBlock[] = [];
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      for (const c of m.toolCalls ?? []) {
+        blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
+      }
+      out.push({ role: "assistant", content: blocks });
+    } else {
+      // tool_result -> user message with a tool_result block; merge onto the
+      // previous user message when it is already carrying tool_result blocks.
+      const block = { type: "tool_result", tool_use_id: m.toolCallId, content: m.content };
+      const prev = out[out.length - 1];
+      if (prev && prev.role === "user" && Array.isArray(prev.content)) {
+        (prev.content as unknown[]).push(block);
+      } else {
+        out.push({ role: "user", content: [block] });
+      }
+    }
+  }
+  return out;
+}
+
+/** Anthropic response -> neutral AgentTurn. */
+export function parseAnthropicResponse(resp: AnthropicResponse): AgentTurn {
+  const textParts: string[] = [];
+  const toolCalls: AgentToolCall[] = [];
+  for (const block of resp.content ?? []) {
+    if (block.type === "text" && block.text) textParts.push(block.text);
+    else if (block.type === "tool_use" && block.id && block.name) {
+      toolCalls.push({ id: block.id, name: block.name, input: block.input ?? {} });
+    }
+  }
+  const stop: AgentTurn["stop"] =
+    resp.stop_reason === "tool_use"
+      ? "tool_use"
+      : resp.stop_reason === "max_tokens"
+        ? "limit"
+        : "end";
+  return { text: textParts.join("") || undefined, toolCalls, stop };
+}
+
+export class AnthropicAgentModel implements AgentModel {
+  readonly model: string;
+  constructor(
+    private readonly config: AgentModelConfig,
+    private readonly client?: AnthropicLikeClient
+  ) {
+    this.model = config.model;
+  }
+
+  private async getClient(): Promise<AnthropicLikeClient> {
+    if (this.client) return this.client;
+    if (!this.config.anthropicApiKey) {
+      throw new Error("ANTHROPIC_API_KEY is required when FOUNDERSOS_AGENT_PROVIDER=anthropic");
+    }
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    return new Anthropic({ apiKey: this.config.anthropicApiKey }) as unknown as AnthropicLikeClient;
+  }
+
+  async turn(input: {
+    system: string;
+    messages: AgentMessage[];
+    tools: AgentTool[];
+  }): Promise<AgentTurn> {
+    const client = await this.getClient();
+    const resp = await client.messages.create({
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      system: input.system,
+      messages: toAnthropicMessages(input.messages),
+      tools: toAnthropicTools(input.tools),
+    });
+    return parseAnthropicResponse(resp);
+  }
+}
+
+// ── Provider: OpenAI ────────────────────────────────────────────────────────
+// Translates to and from the OpenAI Chat Completions tool-use dialect. Reuses
+// the existing `openai` dependency; the key is shared with the embedding layer.
+
+interface OpenAIToolCall {
+  id: string;
+  function: { name: string; arguments: string };
+}
+interface OpenAIResponse {
+  choices: Array<{
+    message: { content?: string | null; tool_calls?: OpenAIToolCall[] };
+    finish_reason?: string | null;
+  }>;
+}
+interface OpenAILikeClient {
+  chat: { completions: { create(body: Record<string, unknown>): Promise<OpenAIResponse> } };
+}
+
+/** Neutral AgentTool[] -> OpenAI function tools. */
+export function toOpenAITools(tools: AgentTool[]): Array<Record<string, unknown>> {
+  return tools.map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: t.inputSchema },
+  }));
+}
+
+/** system + neutral AgentMessage[] -> OpenAI chat messages. */
+export function toOpenAIMessages(
+  system: string,
+  messages: AgentMessage[]
+): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [{ role: "system", content: system }];
+  for (const m of messages) {
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      const msg: Record<string, unknown> = { role: "assistant", content: m.content ?? null };
+      if (m.toolCalls && m.toolCalls.length) {
+        msg.tool_calls = m.toolCalls.map((c) => ({
+          id: c.id,
+          type: "function",
+          function: { name: c.name, arguments: JSON.stringify(c.input) },
+        }));
+      }
+      out.push(msg);
+    } else {
+      out.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
+    }
+  }
+  return out;
+}
+
+/** OpenAI response -> neutral AgentTurn. */
+export function parseOpenAIResponse(resp: OpenAIResponse): AgentTurn {
+  const choice = resp.choices?.[0];
+  const msg = choice?.message ?? {};
+  const toolCalls: AgentToolCall[] = (msg.tool_calls ?? []).map((tc) => {
+    let input: Record<string, unknown> = {};
+    try {
+      input = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+    } catch {
+      input = {};
+    }
+    return { id: tc.id, name: tc.function.name, input };
+  });
+  const stop: AgentTurn["stop"] =
+    choice?.finish_reason === "tool_calls"
+      ? "tool_use"
+      : choice?.finish_reason === "length"
+        ? "limit"
+        : "end";
+  return { text: msg.content ?? undefined, toolCalls, stop };
+}
+
+export class OpenAIAgentModel implements AgentModel {
+  readonly model: string;
+  constructor(
+    private readonly config: AgentModelConfig,
+    private readonly client?: OpenAILikeClient
+  ) {
+    this.model = config.model;
+  }
+
+  private async getClient(): Promise<OpenAILikeClient> {
+    if (this.client) return this.client;
+    if (!this.config.openaiApiKey) {
+      throw new Error("OPENAI_API_KEY is required when FOUNDERSOS_AGENT_PROVIDER=openai");
+    }
+    const { OpenAI } = await import("openai");
+    return new OpenAI({ apiKey: this.config.openaiApiKey }) as unknown as OpenAILikeClient;
+  }
+
+  async turn(input: {
+    system: string;
+    messages: AgentMessage[];
+    tools: AgentTool[];
+  }): Promise<AgentTurn> {
+    const client = await this.getClient();
+    const resp = await client.chat.completions.create({
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      tools: toOpenAITools(input.tools),
+      tool_choice: "auto",
+      messages: toOpenAIMessages(input.system, input.messages),
+    });
+    return parseOpenAIResponse(resp);
   }
 }
