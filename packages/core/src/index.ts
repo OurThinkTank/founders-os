@@ -119,10 +119,12 @@ export {
   foundersOsAllowedToolNames,
   runnerAllowedTools,
   isConnectorTool,
+  parseConnectorTool,
   makeRunnerCanUseTool,
   summarizeRunnerMessages,
   runAgentTick,
 } from "./agent/runner.js";
+export { makeVerifyClearanceDecision } from "./agent/clearance-hook.js";
 export type {
   RunnerToolUse,
   RunnerMessage,
@@ -170,7 +172,7 @@ export { registerMemberTools } from "./tools/members/index.js";
 export { registerRSSTools } from "./tools/rss/index.js";
 export { registerSurfaceTools } from "./tools/surfaces/index.js";
 export { registerPlaybookTools } from "./tools/playbooks/index.js";
-export { registerGovernanceTools, approveAction, bulkApproveActions, verifyAndConsumeClearance } from "./tools/governance/index.js";
+export { registerGovernanceTools, approveAction, bulkApproveActions, verifyAndConsumeClearance, actionHash } from "./tools/governance/index.js";
 export { registerTriggerTools } from "./tools/triggers/index.js";
 export { registerNotificationTools } from "./tools/notifications/index.js";
 export { registerProjectTools } from "./tools/projects/index.js";

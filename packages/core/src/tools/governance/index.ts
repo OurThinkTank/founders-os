@@ -86,7 +86,12 @@ function toProposedAction(a: ProposedActionInput): ProposedAction {
   };
 }
 
-function actionHash(a: ProposedAction): string {
+/** The canonical content hash of an action: sha256 over kind + connector +
+ * action + params (summary excluded). The gate stamps it onto a clearance;
+ * the dispatch hook recomputes it from the outbound connector call to prove
+ * the sent action is the cleared one. Exported so the runner hook computes
+ * an identical hash. */
+export function actionHash(a: ProposedAction): string {
   return "sha256:" + createHash("sha256").update(canonicalActionString(a)).digest("hex");
 }
 
@@ -147,38 +152,65 @@ async function recordExternalClearance(
  */
 export async function verifyAndConsumeClearance(
   ctx: ToolContext,
-  params: { connector: string; jti: string; actionHash: string }
+  params: { connector: string; actionHash: string; jti?: string }
 ): Promise<{ allowed: boolean; reason?: string }> {
-  const { connector, jti, actionHash } = params;
-  const nowIso = new Date().toISOString();
+  const { connector, actionHash, jti } = params;
 
-  const { data, error } = await ctx.db
+  // 1. Find a fresh ('cleared') clearance matching the connector AND the exact
+  //    action_hash (content match: proves the sent action is the cleared one,
+  //    blocking a bait-and-switch). Narrowed to a jti when one is supplied.
+  //    The hook normally has no jti (a connector call carries no clearance id),
+  //    so the (connector, action_hash) pair is the match key.
+  let q = ctx.db
     .from("action_clearances")
-    .update({ status: "dispatched", dispatched_at: nowIso })
+    .select("jti, expires_at")
     .eq("company_id", ctx.companyId)
-    .eq("jti", jti)
     .eq("connector", connector)
     .eq("action_hash", actionHash)
     .eq("status", "cleared")
-    .select("jti, expires_at")
-    .maybeSingle();
-  if (error) throw new Error(`Failed to consume clearance: ${error.message}`);
-
-  if (!data) {
+    .order("cleared_at", { ascending: true });
+  if (jti) q = q.eq("jti", jti);
+  const { data, error } = await q;
+  if (error) throw new Error(`Failed to load clearance: ${error.message}`);
+  const candidate = ((data ?? []) as Array<{ jti: string; expires_at?: string }>)[0];
+  if (!candidate) {
     await writeAuditLog(ctx, {
       action: "dispatch_denied",
       entity_type: "action",
-      entity_id: jti,
+      entity_id: jti ?? actionHash,
       metadata: { connector, reason: "no_fresh_clearance" },
     });
     return { allowed: false, reason: "no_fresh_clearance" };
   }
 
-  if (data.expires_at && new Date(data.expires_at as string).getTime() < Date.now()) {
+  // 2. Atomic single-use consume by the primary key (company_id, jti): only a
+  //    row still 'cleared' flips, so two concurrent dispatches cannot both win.
+  const nowIso = new Date().toISOString();
+  const { data: flipped, error: upErr } = await ctx.db
+    .from("action_clearances")
+    .update({ status: "dispatched", dispatched_at: nowIso })
+    .eq("company_id", ctx.companyId)
+    .eq("jti", candidate.jti)
+    .eq("status", "cleared")
+    .select("jti")
+    .maybeSingle();
+  if (upErr) throw new Error(`Failed to consume clearance: ${upErr.message}`);
+  if (!flipped) {
     await writeAuditLog(ctx, {
       action: "dispatch_denied",
       entity_type: "action",
-      entity_id: jti,
+      entity_id: candidate.jti,
+      metadata: { connector, reason: "already_dispatched" },
+    });
+    return { allowed: false, reason: "already_dispatched" };
+  }
+
+  // 3. Expiry: a stale clearance must not dispatch (it is now consumed).
+  if (candidate.expires_at && new Date(candidate.expires_at).getTime() < Date.now()) {
+    await writeAuditLog(ctx, {
+      action: "dispatch_denied",
+      entity_type: "action",
+      entity_id: candidate.jti,
       metadata: { connector, reason: "expired" },
     });
     return { allowed: false, reason: "expired" };
@@ -187,7 +219,7 @@ export async function verifyAndConsumeClearance(
   await writeAuditLog(ctx, {
     action: "action_dispatched",
     entity_type: "action",
-    entity_id: jti,
+    entity_id: candidate.jti,
     metadata: { connector, action_hash: actionHash },
   });
   return { allowed: true };

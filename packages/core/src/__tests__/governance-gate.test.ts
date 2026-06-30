@@ -25,6 +25,8 @@ import {
   registerGovernanceTools,
   verifyAndConsumeClearance,
 } from "../tools/governance/index.js";
+import { makeVerifyClearanceDecision } from "../agent/clearance-hook.js";
+import { parseConnectorTool } from "../agent/runner.js";
 import type { ToolContext } from "../types/context.js";
 
 beforeAll(() => {
@@ -607,6 +609,59 @@ describe("verify-clearance — single-use external dispatch gate (T0.2)", () => 
     const res = await verifyAndConsumeClearance(ctx, { connector: "slack", jti, actionHash: hash });
     expect(res.allowed).toBe(false);
     expect(res.reason).toBe("expired");
+  });
+
+  it("matches a clearance by connector + content hash with no jti (the hook's path)", async () => {
+    const ctx = makeCtx();
+    const { hash } = await clearExternalSlack(ctx);
+    const ok = await verifyAndConsumeClearance(ctx, { connector: "slack", actionHash: hash });
+    expect(ok.allowed).toBe(true);
+    const replay = await verifyAndConsumeClearance(ctx, { connector: "slack", actionHash: hash });
+    expect(replay.allowed).toBe(false);
+  });
+});
+
+// ── The dispatch hook: canUseTool's connectorDecision (T2.2) ──
+// Reconstructs the action from the connector tool call, recomputes the gate's
+// content hash, and consumes a matching clearance. Allowed once; replay and
+// bait-and-switch denied; no clearance => denied (stage-only).
+
+describe("verify-clearance dispatch hook (T2.2)", () => {
+  it("parseConnectorTool splits connector + action; null for founders-os/non-mcp tools", () => {
+    expect(parseConnectorTool("mcp__slack__send_message")).toEqual({ connector: "slack", action: "send_message" });
+    expect(parseConnectorTool("mcp__founders-os__create_task")).toBeNull();
+    expect(parseConnectorTool("Read")).toBeNull();
+  });
+
+  async function clearSlackSend(ctx: ToolContext, text: string) {
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action: "send_message", params: { text } } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+  }
+
+  it("allows a connector write matching a fresh clearance, then denies the replay", async () => {
+    const ctx = makeCtx();
+    await clearSlackSend(ctx, "renewal note");
+    const decide = makeVerifyClearanceDecision(ctx);
+    expect((await decide("mcp__slack__send_message", { text: "renewal note" })).behavior).toBe("allow");
+    expect((await decide("mcp__slack__send_message", { text: "renewal note" })).behavior).toBe("deny");
+  });
+
+  it("denies a bait-and-switch: different params than were cleared, leaving the real clearance intact", async () => {
+    const ctx = makeCtx();
+    await clearSlackSend(ctx, "benign");
+    const decide = makeVerifyClearanceDecision(ctx);
+    expect((await decide("mcp__slack__send_message", { text: "exfiltrate the secret" })).behavior).toBe("deny");
+    // the genuine cleared content still passes (its clearance was not burned)
+    expect((await decide("mcp__slack__send_message", { text: "benign" })).behavior).toBe("allow");
+  });
+
+  it("denies a connector write with no clearance at all (stage-only baseline)", async () => {
+    const ctx = makeCtx();
+    const decide = makeVerifyClearanceDecision(ctx);
+    const r = await decide("mcp__slack__send_message", { text: "unsanctioned" });
+    expect(r.behavior).toBe("deny");
+    if (r.behavior === "deny") expect(r.message).toMatch(/clearance/i);
   });
 });
 

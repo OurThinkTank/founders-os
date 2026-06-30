@@ -36,6 +36,7 @@ import {
   buildRunnerMcpServers,
   runnerAllowedTools,
   makeRunnerCanUseTool,
+  makeVerifyClearanceDecision,
   runAgentTick,
   RUNNER_SYSTEM_PROMPT,
   RUNNER_USER_PROMPT,
@@ -231,6 +232,7 @@ async function runAgentSdkMode(args: Args): Promise<number> {
 
   const runId = randomUUID();
   let mcpServers;
+  let hookCtx;
   try {
     const launch = foundersOsLaunch();
     mcpServers = buildRunnerMcpServers({
@@ -240,6 +242,10 @@ async function runAgentSdkMode(args: Args): Promise<number> {
       serverEnv: collectServerEnv(),
       connectors: loadRunnerConnectors(),
     });
+    // The verify-clearance hook needs DB access; build an autonomous context
+    // for it (it reads/writes the same action_clearances the founders-os
+    // subprocess writes via execute_action).
+    hookCtx = buildAutonomousContext(runId);
   } catch (e) {
     process.stderr.write(`[tick] runner config error: ${errMessage(e)}\n`);
     return EXIT_FAIL;
@@ -251,8 +257,10 @@ async function runAgentSdkMode(args: Args): Promise<number> {
     allowedTools: runnerAllowedTools(),
     systemPrompt: RUNNER_SYSTEM_PROMPT,
     prompt: RUNNER_USER_PROMPT,
-    // T2.1: stage-only. T2.2 passes a connectorDecision backed by verify-clearance.
-    canUseTool: makeRunnerCanUseTool({}),
+    // A connector write is allowed only if it consumes a fresh clearance for
+    // the exact action (verify-clearance, T2.2). With no enabled connector
+    // the model has no connector tools and everything stages.
+    canUseTool: makeRunnerCanUseTool({ connectorDecision: makeVerifyClearanceDecision(hookCtx) }),
     maxTurns: maxTurnsRaw ? Number(maxTurnsRaw) : 40,
     model: process.env.FOUNDERSOS_AGENT_MODEL,
   };

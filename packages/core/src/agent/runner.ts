@@ -133,6 +133,17 @@ export function isConnectorTool(toolName: string): boolean {
   return toolName.startsWith("mcp__") && !toolName.startsWith(`mcp__${FOUNDERS_OS_MCP_NAME}__`);
 }
 
+/** Parse a connector tool name `mcp__<connector>__<action>` into its parts.
+ * Returns null for a founders-os tool or a non-MCP tool name. The connector
+ * is the MCP server key; the action is the connector verb. */
+export function parseConnectorTool(toolName: string): { connector: string; action: string } | null {
+  if (!isConnectorTool(toolName)) return null;
+  const rest = toolName.slice("mcp__".length);
+  const sep = rest.indexOf("__");
+  if (sep < 0) return null;
+  return { connector: rest.slice(0, sep), action: rest.slice(sep + 2) };
+}
+
 /**
  * Build the runner's permission callback.
  *   - a founders-os allowlisted tool: allow.
