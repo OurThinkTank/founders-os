@@ -60,9 +60,16 @@ describe("buildRunnerMcpServers", () => {
 });
 
 describe("tool surface", () => {
-  it("permits the autonomous allowlist plus resolve_trigger_fire, and nothing else", () => {
+  it("permits the autonomous allowlist plus resolve_trigger_fire and execute_action", () => {
     expect(RUNNER_FOUNDERS_OS_TOOLS).toContain("resolve_trigger_fire");
     for (const t of AGENT_TOOL_ALLOWLIST) expect(RUNNER_FOUNDERS_OS_TOOLS).toContain(t);
+  });
+
+  it("adds execute_action to the SDK runner only, keeping the shared allowlist (Phase 2b) stage-only", () => {
+    // The Agent SDK runner needs execute_action to mint a dispatch clearance;
+    // the frozen Phase 2b runner (which reads AGENT_TOOL_ALLOWLIST) must not get it.
+    expect(RUNNER_FOUNDERS_OS_TOOLS).toContain("execute_action");
+    expect(AGENT_TOOL_ALLOWLIST as readonly string[]).not.toContain("execute_action");
   });
 
   it("allowedTools are founders-os patterns only (connectors gated by canUseTool, not auto-approved)", () => {

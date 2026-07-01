@@ -214,7 +214,13 @@ export async function recordDispatchFinding(
       external_ref: `dispatch:${jti}`,
       observed_at: nowIso,
       summary,
-      matched_approval: jti,
+      // matched_approval is a FK to pending_approvals(id). An auto-dispatched
+      // allow/allow_with_log action has NO pending_approvals row (allow tiers
+      // never create one), so the jti is not a valid approval id and setting it
+      // here violates the FK (which aborts the pre-execution hook and blocks the
+      // send). The jti is preserved in external_ref (`dispatch:<jti>`); leave the
+      // approval link null for a headless dispatch.
+      matched_approval: null,
       status: "matched",
       updated_at: nowIso,
     },

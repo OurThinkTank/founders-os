@@ -47,7 +47,11 @@ export const AGENT_TOOL_ALLOWLIST = [
   "create_task",
   "add_task_note",
   "notify_inbox",
-  // stage external (hold tier => staged_for_deferred_approval, no execution)
+  // stage external (hold tier => staged_for_deferred_approval, no execution).
+  // execute_action is deliberately NOT here: this allowlist also feeds the
+  // frozen Phase 2b in-process runner, which stays stage-only. The Agent SDK
+  // runner adds execute_action on top (see RUNNER_FOUNDERS_OS_TOOLS) so only it
+  // can mint a dispatch clearance.
   "preview_action",
 ] as const;
 

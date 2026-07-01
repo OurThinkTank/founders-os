@@ -20,6 +20,11 @@ import {
   findBlockedHosts,
   type ProposedAction,
 } from "../tools/playbooks/risk.js";
+import {
+  resolveOutcome,
+  DEFAULT_TIER_OUTCOMES,
+  type GuardrailPolicy,
+} from "../tools/governance/policy.js";
 
 describe("risk classifier — exfiltration (leading)", () => {
   it("flags an external message carrying a real contact email as exfiltration", () => {
@@ -304,5 +309,113 @@ describe("canonicalActionString — replay binding", () => {
       params: { channel: "#x", text: "different body" },
     };
     expect(canonicalActionString(base)).not.toBe(canonicalActionString(tampered));
+  });
+});
+
+// ============================================================
+// T3.2 — Slack connector risk coverage
+// ============================================================
+// Slack is the first external connector. The dispatch hook reconstructs the
+// ProposedAction straight from the connector tool call, so the verb the
+// classifier sees is the REAL Slack MCP tool name (`slack_send_message`,
+// `slack_schedule_message`) and the params are the REAL tool input
+// (`channel_id`, `message`). These cases prove the classifier reaches the
+// right tier on those exact shapes, and that a Slack send carrying private
+// data still stages even when the Slack policy is the low-friction
+// allow_with_log. The escalation, not the policy, has the final say.
+
+describe("risk classifier — Slack connector coverage (T3.2)", () => {
+  // A policy that makes a plain external write the low-friction tier. This is
+  // the Slack default the rollout flips to (T3.3); the point of the cases
+  // below is that it cannot reach an exfiltrating send.
+  const slackAllowWithLog: GuardrailPolicy = {
+    company_id: "default",
+    tier_outcomes: { ...DEFAULT_TIER_OUTCOMES, external_write: "allow_with_log" },
+    dry_run: false,
+    paused: false,
+  };
+
+  it("a plain Slack send classifies as external_write", () => {
+    const r = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0GENERAL", message: "The Q3 deck is ready for review." },
+    });
+    expect(r.tier).toBe("external_write");
+    expect(r.exfiltration).toBe(false);
+  });
+
+  it("a plain scheduled Slack send classifies as external_write", () => {
+    const r = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_schedule_message",
+      params: { channel_id: "C0GENERAL", message: "Standup reminder.", post_at: 1893456000 },
+    });
+    expect(r.tier).toBe("external_write");
+    expect(r.exfiltration).toBe(false);
+  });
+
+  it("a Slack send carrying a contact email escalates to exfiltration", () => {
+    const r = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0PARTNERS", message: "Loop in jane.doe@acme.com on the renewal." },
+    });
+    expect(r.tier).toBe("exfiltration");
+    expect(r.exfiltration).toBe(true);
+    expect(r.emails).toContain("jane.doe@acme.com");
+  });
+
+  it("a Slack send carrying a secret-looking token escalates to exfiltration", () => {
+    const r = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0ENG", message: "the bot token is xoxb-12345678901-abcdeftaaaa" },
+    });
+    expect(r.tier).toBe("exfiltration");
+    expect(r.exfiltration).toBe(true);
+    expect(r.secrets_found).toContain("slack_token");
+  });
+
+  it("a Slack send carrying a currency figure escalates to exfiltration", () => {
+    const r = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0SALES", message: "Acme's $4,000 renewal closes Friday." },
+    });
+    expect(r.tier).toBe("exfiltration");
+    expect(r.exfiltration).toBe(true);
+    expect(r.financial_values.length).toBeGreaterThan(0);
+  });
+
+  it("under allow_with_log a plain Slack send auto-clears, but an exfiltration send still stages", () => {
+    const plain = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0GENERAL", message: "The Q3 deck is ready for review." },
+    });
+    const leak = classifyAction({
+      kind: "external",
+      connector: "slack",
+      action: "slack_send_message",
+      params: { channel_id: "C0PARTNERS", message: "Loop in jane.doe@acme.com on the renewal." },
+    });
+
+    // Interactive: the plain send auto-sends-and-logs; the leak is held.
+    expect(resolveOutcome(slackAllowWithLog, plain.tier)).toBe("allow_with_log");
+    expect(resolveOutcome(slackAllowWithLog, leak.tier)).toBe("hold_for_approval");
+
+    // Unattended (autonomous): the plain send still auto-dispatches, but the
+    // leak is floored to staged_for_deferred_approval regardless of policy.
+    expect(resolveOutcome(slackAllowWithLog, plain.tier, { autonomous: true })).toBe("allow_with_log");
+    expect(resolveOutcome(slackAllowWithLog, leak.tier, { autonomous: true })).toBe(
+      "staged_for_deferred_approval"
+    );
   });
 });

@@ -723,6 +723,115 @@ describe("connector capability + scope policy (T2.3)", () => {
   });
 });
 
+// ── Slack capability allowlist — real Slack MCP tool names (T3.1) ──
+// The generic capability gate (T2.3) wired to the ACTUAL Slack MCP. The
+// runtime launches Slack under the server key "slack", whose write tools are
+// `slack_send_message` and `slack_schedule_message` and whose channel field is
+// `channel_id` (not the abstract `send_message`/`channel` the early sketch
+// used). Because the dispatch hook reconstructs the action straight from the
+// connector tool call, the policy verbs must be those exact tool-suffix names
+// and the scopeField must be the exact input key. These cases prove the two
+// verbs dispatch end-to-end and every other Slack verb is refused at the hook.
+
+describe("Slack capability allowlist — real Slack MCP (T3.1)", () => {
+  // This is the canonical FOUNDERSOS_CONNECTOR_POLICY for Slack.
+  const SLACK_POLICY: ConnectorPolicy = {
+    slack: {
+      actions: ["slack_send_message", "slack_schedule_message"],
+      scopeField: "channel_id",
+      scopes: ["C0GENERAL", "C0ALERTS"],
+    },
+  };
+
+  it("capability check permits the two write verbs to an allowed channel", () => {
+    expect(
+      checkConnectorCapability(SLACK_POLICY, "slack", "slack_send_message", {
+        channel_id: "C0GENERAL",
+        message: "hi",
+      }).ok
+    ).toBe(true);
+    expect(
+      checkConnectorCapability(SLACK_POLICY, "slack", "slack_schedule_message", {
+        channel_id: "C0ALERTS",
+        message: "hi",
+        post_at: 1893456000,
+      }).ok
+    ).toBe(true);
+  });
+
+  it("capability check refuses any other Slack verb", () => {
+    for (const verb of [
+      "slack_read_channel",
+      "slack_delete_message",
+      "slack_update_canvas",
+      "slack_search_public",
+    ]) {
+      expect(
+        checkConnectorCapability(SLACK_POLICY, "slack", verb, { channel_id: "C0GENERAL" }).ok,
+        verb
+      ).toBe(false);
+    }
+  });
+
+  it("capability check refuses a channel outside the allowlist", () => {
+    expect(
+      checkConnectorCapability(SLACK_POLICY, "slack", "slack_send_message", {
+        channel_id: "C0SECRET",
+        message: "hi",
+      }).ok
+    ).toBe(false);
+  });
+
+  // Mints a real clearance for the exact action the hook will then see. The
+  // params must match the connector tool input EXACTLY (content-hash contract).
+  async function clearSlack(ctx: ToolContext, action: string, params: Record<string, unknown>) {
+    await setPolicy(ctx, { tier_outcomes: { external_write: "allow_with_log" } });
+    const p = await preview(ctx, { action: { kind: "external", connector: "slack", action, params } });
+    await execute(ctx, { confirm_token: p.confirm_token, action: p.resolved_action });
+  }
+
+  it("dispatches slack_send_message end-to-end through the hook, exactly once", async () => {
+    const ctx = makeCtx();
+    const params = { channel_id: "C0GENERAL", message: "The Q3 deck is ready for review." };
+    await clearSlack(ctx, "slack_send_message", params);
+    const decide = makeVerifyClearanceDecision(ctx, { policy: SLACK_POLICY });
+    expect((await decide("mcp__slack__slack_send_message", params)).behavior).toBe("allow");
+    // single-use: a replay of the same send is denied.
+    expect((await decide("mcp__slack__slack_send_message", params)).behavior).toBe("deny");
+  });
+
+  it("dispatches slack_schedule_message end-to-end through the hook", async () => {
+    const ctx = makeCtx();
+    const params = { channel_id: "C0ALERTS", message: "Standup reminder.", post_at: 1893456000 };
+    await clearSlack(ctx, "slack_schedule_message", params);
+    const decide = makeVerifyClearanceDecision(ctx, { policy: SLACK_POLICY });
+    expect((await decide("mcp__slack__slack_schedule_message", params)).behavior).toBe("allow");
+  });
+
+  it("refuses a non-allowlisted Slack verb at the hook without touching a valid clearance", async () => {
+    const ctx = makeCtx();
+    const params = { channel_id: "C0GENERAL", message: "hi" };
+    await clearSlack(ctx, "slack_send_message", params);
+    const decide = makeVerifyClearanceDecision(ctx, { policy: SLACK_POLICY });
+    // A delete verb is refused at the capability check, never reaching verify-clearance.
+    expect((await decide("mcp__slack__slack_delete_message", params)).behavior).toBe("deny");
+    // The send clearance is intact, so the permitted verb still works.
+    expect((await decide("mcp__slack__slack_send_message", params)).behavior).toBe("allow");
+  });
+
+  it("refuses a disallowed channel at the hook without burning the clearance", async () => {
+    const ctx = makeCtx();
+    const good = { channel_id: "C0GENERAL", message: "renewal note" };
+    await clearSlack(ctx, "slack_send_message", good);
+    const decide = makeVerifyClearanceDecision(ctx, { policy: SLACK_POLICY });
+    expect(
+      (await decide("mcp__slack__slack_send_message", { channel_id: "C0SECRET", message: "renewal note" }))
+        .behavior
+    ).toBe("deny");
+    expect((await decide("mcp__slack__slack_send_message", good)).behavior).toBe("allow");
+  });
+});
+
 // ── Reconcile-at-dispatch (T2.4) ──
 // An allowed dispatch records its own matched finding, linked to the consumed
 // clearance, so a headless send needs no later fetch-and-diff.
@@ -740,7 +849,9 @@ describe("reconcile-at-dispatch (T2.4)", () => {
     const findings = ((ctx.db as unknown as FakeDb).store.get("reconciliation_findings") ?? []) as Row[];
     expect(findings.length).toBe(1);
     expect(findings[0].status).toBe("matched");
-    expect(findings[0].matched_approval).toBe(p.jti);
+    // matched_approval is a FK to pending_approvals(id); an allow-tier dispatch
+    // has no approval row, so it is null and the jti rides in external_ref.
+    expect(findings[0].matched_approval).toBeNull();
     expect(findings[0].external_ref).toBe(`dispatch:${p.jti}`);
 
     const list = await listFindings(ctx, { status: "matched" });

@@ -110,6 +110,15 @@ export function buildRunnerMcpServers(opts: BuildRunnerMcpOptions): RunnerMcpSer
 export const RUNNER_FOUNDERS_OS_TOOLS: readonly string[] = [
   ...AGENT_TOOL_ALLOWLIST,
   "resolve_trigger_fire",
+  // The Agent SDK runner (unlike the frozen Phase 2b in-process loop) also gets
+  // execute_action, so it can mint the single-use clearance the dispatch hook
+  // verifies for auto-dispatch. Safe for the autonomous principal: execute_action's
+  // clear-time hard gate refuses any action that resolves to hold_for_approval
+  // (held + red tiers), so the runner can only clear what the policy already
+  // auto-allows, and the connector send still requires the opt-in connector
+  // policy plus the canUseTool hook. Kept OUT of AGENT_TOOL_ALLOWLIST so Phase 2b
+  // stays stage-only (frozen, not extended).
+  "execute_action",
 ];
 
 /** The founders-os tool names as Agent SDK patterns (mcp__founders-os__x). */
@@ -180,12 +189,29 @@ export const RUNNER_SYSTEM_PROMPT =
   "You are the unattended Founders OS tick, triaging the watches that fired " +
   "while the founder was away. List the pending fires (list_trigger_fires), and " +
   "for EACH fire choose one move: create_task for an actionable follow-up the " +
-  "founder should do; notify_inbox for a pure heads-up; or preview_action to " +
-  "stage anything that touches the outside world (Slack, email, payments) for the " +
-  "founder to approve. Read context first when useful (get_task, list_tasks, " +
-  "get_entity_card, memory_recall). Never assume facts you cannot see. Prefer " +
-  "staging over acting when unsure. After handling a fire, mark it with " +
-  "resolve_trigger_fire. When no pending fires remain, stop.";
+  "founder should do; notify_inbox for a pure heads-up; or preview_action for " +
+  "anything that touches the outside world (Slack, email, payments). Read context " +
+  "first when useful (get_task, list_tasks, get_entity_card, memory_recall). Never " +
+  "assume facts you cannot see. When you are unsure whether to act at all, prefer a " +
+  "heads-up or staging over acting. After handling a fire, mark it with " +
+  "resolve_trigger_fire. When no pending fires remain, stop.\n\n" +
+  "EXTERNAL ACTIONS — THE GATE. Every action on the outside world goes through the " +
+  "gate, and you must follow its decision rather than assume the action is staged. " +
+  "Call preview_action with kind 'external', connector set to the MCP server name " +
+  "(e.g. 'slack'), action set to the EXACT connector tool name you will call " +
+  "(e.g. 'slack_send_message', NOT 'send_message'), and params set to EXACTLY the " +
+  "fields that connector tool takes (e.g. channel_id and message). Then act on the " +
+  "returned outcome:\n" +
+  "- allow or allow_with_log: you are authorized to complete it NOW. Call " +
+  "execute_action with the confirm_token and the same resolved action, then call the " +
+  "connector's own tool (e.g. mcp__slack__slack_send_message) with the IDENTICAL " +
+  "params you just cleared. Do not change, add, or drop a single field between " +
+  "clearing and sending — the send is permitted only when its parameters match the " +
+  "cleared ones exactly. Do not treat allow_with_log as staged; it means send.\n" +
+  "- hold_for_approval, staged_for_deferred_approval, or paused: STOP. The action is " +
+  "queued for the founder to approve later; do NOT call the connector tool.\n" +
+  "Never call a connector tool without first clearing the exact same call through " +
+  "preview_action and execute_action.";
 
 export const RUNNER_USER_PROMPT =
   "Process the pending trigger fires now. Handle each one, then stop.";
