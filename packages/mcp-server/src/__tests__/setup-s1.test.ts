@@ -64,10 +64,20 @@ describe("buildInitPlan", () => {
     expect(plan.register[0].kind).toBe("cron-add");
   });
 
-  it("execute=true adds a default model so it is never unset", () => {
+  it("execute=true adds a default model so it is never unset (S2.2)", () => {
     const plan = buildInitPlan(cfg({ execute: true }));
     const env = plan.files.find((f) => f.path === paths.envFile)!.content;
     expect(env).toContain("FOUNDERSOS_AGENT_MODEL=claude-sonnet-5");
+    // the real line is present, so the commented example is suppressed
+    expect(env).not.toContain("#   FOUNDERSOS_AGENT_MODEL=");
+  });
+
+  it("hold-only (default) leaves a commented model block for discoverability (S2.2)", () => {
+    const plan = buildInitPlan(cfg({ execute: false }));
+    const env = plan.files.find((f) => f.path === paths.envFile)!.content;
+    expect(env).not.toContain("\nFOUNDERSOS_AGENT_MODEL="); // not active
+    expect(env).toContain("#   FOUNDERSOS_AGENT_MODEL=claude-sonnet-5"); // commented guidance
+    expect(env).toContain("run --execute");
   });
 
   it("Windows is deferred to S4", () => {

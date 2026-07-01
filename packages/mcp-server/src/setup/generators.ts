@@ -178,5 +178,22 @@ export function buildEnvFile(env: Record<string, string>): string {
   for (const k of Object.keys(env)) {
     if (!seen.has(k) && env[k] != null && env[k] !== "") lines.push(envLine(k, env[k]));
   }
+
+  // When no model is configured, leave a commented block so the var names are
+  // discoverable without hunting the docs. Uncommenting enables the
+  // model-driven full run (founders-os-tick run --execute); the scheduled job
+  // stays hold-only regardless. Honest framing: full run still only detects,
+  // withholds, records, and reconciles — externals are staged, never sent.
+  if (!env.FOUNDERSOS_AGENT_MODEL) {
+    lines.push(
+      "",
+      "# ── Optional: model-driven full run (founders-os-tick run --execute) ──",
+      "# Leave commented to keep the safe hold-only posture. Uncomment to enable.",
+      "#   FOUNDERSOS_AGENT_PROVIDER=anthropic          # or: openai",
+      "#   FOUNDERSOS_AGENT_MODEL=claude-sonnet-5        # recommended for triage",
+      "#   ANTHROPIC_API_KEY=sk-ant-...                  # OpenAI reuses OPENAI_API_KEY"
+    );
+  }
+
   return lines.join("\n") + "\n";
 }

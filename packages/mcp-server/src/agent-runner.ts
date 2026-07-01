@@ -81,16 +81,37 @@ export function foundersOsLaunch(): { command: string; args: string[] } {
   return { command: process.execPath, args: [resolve(here, "index.js")] };
 }
 
-/** Load the per-connector auto-dispatch policy from FOUNDERSOS_CONNECTOR_POLICY
- * (a JSON object keyed by connector, each with `actions` and optional
- * `scopeField`/`scopes`). Unset => {} => every connector is denied at the
- * hook, so the runner stays stage-only until a connector is explicitly
- * enabled. This is separate from the credential: the token lives in the
- * connectors MCP config (FOUNDERSOS_RUNNER_CONNECTORS), never here. */
+/** Load the per-connector auto-dispatch policy (a JSON object keyed by
+ * connector, each with `actions` and optional `scopeField`/`scopes`). Two
+ * sources, checked in order:
+ *   1. FOUNDERSOS_CONNECTOR_POLICY      — inline JSON string (back-compat; wins).
+ *   2. FOUNDERSOS_CONNECTOR_POLICY_FILE — a path to the same JSON.
+ * The file form is the wizard-friendly one: `init`/`connect` keep the policy
+ * as a file in the config dir next to the connectors file, so a user never
+ * meets the path-vs-inline asymmetry (one env var is a path, the other the
+ * JSON itself). Neither set => {} => every connector is denied at the hook,
+ * so the runner stays stage-only until a connector is explicitly enabled.
+ * This is separate from the credential: the token lives in the connectors MCP
+ * config (FOUNDERSOS_RUNNER_CONNECTORS), never here. */
 export function loadConnectorPolicy(): ConnectorPolicy {
-  const raw = process.env.FOUNDERSOS_CONNECTOR_POLICY;
-  if (!raw) return {};
-  return JSON.parse(raw) as ConnectorPolicy;
+  const inline = process.env.FOUNDERSOS_CONNECTOR_POLICY;
+  if (inline) return JSON.parse(inline) as ConnectorPolicy;
+
+  const file = process.env.FOUNDERSOS_CONNECTOR_POLICY_FILE;
+  if (file) {
+    // A file set but unreadable/invalid is an operator error, not a silent
+    // fall-through to stage-only: surface it so the run reports a config error
+    // rather than mysteriously refusing every send.
+    try {
+      return JSON.parse(readFileSync(file, "utf-8")) as ConnectorPolicy;
+    } catch (e) {
+      throw new Error(
+        `FOUNDERSOS_CONNECTOR_POLICY_FILE is ${file} but could not be read or parsed: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  }
+
+  return {};
 }
 
 /** Load connector MCP servers from FOUNDERSOS_RUNNER_CONNECTORS (a JSON file
