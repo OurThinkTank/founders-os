@@ -1,0 +1,505 @@
+// ============================================================
+// Founders OS — Triggers Domain (declarative watches)
+// ============================================================
+// Triggers make the OS proactive: declarative "this is worth reacting
+// to" conditions stored as data. A deterministic evaluate_triggers runs
+// the enabled ones; data conditions are evaluated and fire-claimed
+// server-side, connector conditions are returned as checks for the
+// agent to run and report back. Dedup (last_fired_at + last_state
+// fingerprint) means a watcher fires once when a situation becomes true
+// and again when it worsens, not every tick.
+//
+// Detection is deterministic and server-owned; judgment and action are
+// the agent's job, routed through the governance gate (preview_action).
+//
+// Pattern A-contextual. Every read/write is scoped by ctx.companyId.
+// ============================================================
+
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerToolMap, type ToolMap } from "../register.js";
+import type { ToolContext } from "../../types/context.js";
+import type { Render } from "../../types/render.js";
+import { writeAuditLog } from "../audit.js";
+import { fingerprint } from "./dedup.js";
+import { dismissFiresForTriggers } from "./cleanup.js";
+import { DATA_CONDITION_TYPES } from "./conditions.js";
+import { buildConnectorCheck, CONNECTOR_CONDITION_TYPES, type ConnectorCheck } from "./connector.js";
+import {
+  TRIGGER_SELECT,
+  claimFire,
+  resolvedActionRef,
+  evaluateDataTriggers,
+  type TriggerRow,
+} from "./evaluate.js";
+
+const ALL_CONDITION_TYPES = [...DATA_CONDITION_TYPES, ...CONNECTOR_CONDITION_TYPES];
+
+// Conditions whose underlying data has no per-user owner. For these,
+// 'personal' scope cannot restrict evaluation (customers have no owner;
+// the financial books are company-wide), so it is a presentation label
+// only - the watch still evaluates company-wide. create_trigger says so
+// in a note. The task conditions (overdue_task, stuck_task) are the
+// ownable ones and ARE filtered by owner. (M3, 2026-06-29 review.)
+const NON_OWNABLE_CONDITIONS = new Set(["stalled_deal", "overspend", "budget_threshold"]);
+
+// ── Validation helpers ─────────────────────────────────────
+
+async function assertPlaybookBelongsToCompany(ctx: ToolContext, playbookId: string): Promise<void> {
+  const { data, error } = await ctx.db
+    .from("playbooks")
+    .select("id")
+    .eq("company_id", ctx.companyId)
+    .eq("id", playbookId)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (error) throw new Error(`Could not verify playbook: ${error.message}`);
+  if (!data) throw new Error(`Playbook ${playbookId} not found for this company.`);
+}
+
+interface TriggerConfig {
+  condition_source: "data" | "connector";
+  condition_type: string;
+  connector?: string | null;
+  action_type: "run_playbook" | "create_task" | "notify";
+  playbook_id?: string | null;
+}
+
+async function validateTriggerConfig(ctx: ToolContext, cfg: TriggerConfig): Promise<void> {
+  if (cfg.condition_source === "data") {
+    if (!DATA_CONDITION_TYPES.includes(cfg.condition_type)) {
+      throw new Error(
+        `condition_type "${cfg.condition_type}" is not a data condition. Data conditions: ${DATA_CONDITION_TYPES.join(", ")}.`
+      );
+    }
+  } else {
+    if (!CONNECTOR_CONDITION_TYPES.includes(cfg.condition_type)) {
+      throw new Error(
+        `condition_type "${cfg.condition_type}" is not a connector condition. Connector conditions: ${CONNECTOR_CONDITION_TYPES.join(", ")}.`
+      );
+    }
+    if (!cfg.connector || cfg.connector.trim() === "") {
+      throw new Error(`condition_source "connector" requires a connector (e.g. "stripe").`);
+    }
+  }
+  if (cfg.action_type === "run_playbook") {
+    if (!cfg.playbook_id) throw new Error(`action_type "run_playbook" requires a playbook_id.`);
+    await assertPlaybookBelongsToCompany(ctx, cfg.playbook_id);
+  }
+}
+
+// Detection internals (TRIGGER_SELECT, claimFire, resolvedActionRef,
+// TriggerRow) live in ./evaluate.ts so the same implementation backs both
+// this tool and the headless `founders-os-tick detect` CLI. They are
+// imported above.
+
+// ── Render helpers ─────────────────────────────────────────
+
+function listTriggersRender(rows: Array<Record<string, unknown>>): Render {
+  const line = (r: Record<string, unknown>) => {
+    const installed = String(r.created_by ?? "").startsWith("playbook:") ? " (installed by automation)" : "";
+    return `| ${r.enabled ? "enabled" : "disabled"} | ${r.name} | ${r.condition_source}/${r.condition_type}${installed} | ${r.cadence_hint ?? ""} |`;
+  };
+  const md = rows.length
+    ? "| State | Name | Condition | Cadence |\n|---|---|---|---|\n" + rows.map(line).join("\n")
+    : "No triggers configured yet.";
+  return {
+    tier_1: {
+      format_hint: "status_groups",
+      instructions: {
+        scope: "Render the triggers grouped into enabled and disabled. This is the 'what is Founders OS watching' surface.",
+        format:
+          "Two groups (enabled, disabled). Each row shows the name, a data/connector badge, the condition_type, an 'installed by automation' badge when created_by starts with 'playbook:', and the cadence.",
+        forbidden: "Do not omit disabled triggers; the user needs to see what is paused.",
+      },
+    },
+    tier_3: { markdown: md },
+  };
+}
+
+// ── Tools ──────────────────────────────────────────────────
+
+export const triggerTools: ToolMap = {
+  create_trigger: {
+    title: "Create Trigger",
+    description:
+      "Register a watch. condition_source is 'data' (server-evaluated SQL: " +
+      DATA_CONDITION_TYPES.join(", ") +
+      ") or 'connector' (agent-evaluated via a connected tool: " +
+      CONNECTOR_CONDITION_TYPES.join(", ") +
+      "; connector required). action_type is run_playbook (playbook_id required and verified), create_task, or notify. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      name: z.string().describe("Short human name for the watch."),
+      condition_type: z.enum([
+        "stalled_deal", "overspend", "budget_threshold",
+        "overdue_task", "stuck_task", "feed_keyword_match", "overdue_invoice",
+      ]).describe("What to watch for."),
+      condition_source: z.enum(["data", "connector"]).optional().describe("'data' (default) or 'connector'."),
+      connector: z.string().optional().describe("Required when condition_source is 'connector' (e.g. 'stripe')."),
+      params: z.record(z.string(), z.unknown()).optional().describe("Condition params, e.g. { days: 14 } or { threshold_cents: 500000, window_days: 30 }."),
+      action_type: z.enum(["run_playbook", "create_task", "notify"]).optional().describe("What to do when it fires. Default run_playbook."),
+      playbook_id: z.string().uuid().optional().describe("Required when action_type is run_playbook. Must belong to this company."),
+      action_params: z.record(z.string(), z.unknown()).optional().describe("Templated action params; resolved + classified inside preview_action when the action runs."),
+      cadence_hint: z.enum(["hourly", "daily", "weekly"]).optional().describe("Advisory check cadence. Default daily."),
+      scope: z.enum(["org", "personal"]).optional().describe("Default org. For the task conditions (overdue_task, stuck_task), 'personal' restricts evaluation to the owner's tasks (assigned to OR created by owner_id). For deal/spend conditions, which have no per-user owner, 'personal' is a label only and the watch still evaluates company-wide."),
+      owner_id: z.string().optional().describe("Owner for a personal-scope watch. Defaults to the creator when scope is 'personal'. The watch fires only on tasks assigned to OR created by this owner (task conditions only)."),
+      digest: z.boolean().optional().describe("Roll up into a digest rather than firing individually. Default false."),
+      bound_entity_type: z.string().optional().describe("Entity this watch is bound to (e.g. 'customer'), for cascade cleanup."),
+      bound_entity_id: z.string().uuid().optional().describe("Id of the bound entity."),
+      source_run_id: z.string().uuid().optional().describe("When a playbook run installs this watch, pass the run id; created_by is recorded as 'playbook:<run-id>' so cleanup and the 'installed by automation' badge work."),
+    }),
+    handler: async (ctx: ToolContext, p: {
+      name: string; condition_type: string; condition_source?: "data" | "connector";
+      connector?: string; params?: Record<string, unknown>; action_type?: "run_playbook" | "create_task" | "notify";
+      playbook_id?: string; action_params?: Record<string, unknown>; cadence_hint?: "hourly" | "daily" | "weekly";
+      scope?: "org" | "personal"; owner_id?: string; digest?: boolean; bound_entity_type?: string; bound_entity_id?: string;
+      source_run_id?: string;
+    }) => {
+      const condition_source = p.condition_source ?? "data";
+      const action_type = p.action_type ?? "run_playbook";
+      await validateTriggerConfig(ctx, {
+        condition_source, condition_type: p.condition_type, connector: p.connector,
+        action_type, playbook_id: p.playbook_id,
+      });
+      // Playbook-authored watches carry a 'playbook:<run-id>' provenance so
+      // cascade cleanup and the "installed by automation" badge can find them.
+      const created_by = p.source_run_id ? `playbook:${p.source_run_id}` : ctx.userId;
+
+      // A personal watch needs an owner to filter by; default it to the
+      // creator so a personal task watch is scoped to "my" tasks out of the
+      // box rather than silently evaluating company-wide.
+      const scope = p.scope ?? "org";
+      const owner_id = scope === "personal" ? (p.owner_id ?? ctx.userId) : (p.owner_id ?? null);
+
+      const { data, error } = await ctx.db.from("triggers").insert({
+        company_id: ctx.companyId,
+        name: p.name,
+        condition_source,
+        condition_type: p.condition_type,
+        connector: p.connector ?? null,
+        params: p.params ?? {},
+        action_type,
+        playbook_id: p.playbook_id ?? null,
+        action_params: p.action_params ?? {},
+        cadence_hint: p.cadence_hint ?? "daily",
+        scope,
+        owner_id,
+        digest: p.digest ?? false,
+        bound_entity_type: p.bound_entity_type ?? null,
+        bound_entity_id: p.bound_entity_id ?? null,
+        created_by,
+        enabled: true,
+      }).select(TRIGGER_SELECT + ", cadence_hint").maybeSingle();
+      if (error) throw new Error(`Failed to create trigger: ${error.message}`);
+
+      // Personal scope only filters evaluation for conditions that have a
+      // per-user owner (the task conditions). For deal/spend conditions the
+      // underlying data is company-owned, so 'personal' is a label only and
+      // the watch still evaluates company-wide - say so rather than let it
+      // silently surprise the user (M3).
+      const note =
+        scope === "personal" && NON_OWNABLE_CONDITIONS.has(p.condition_type)
+          ? `Note: "${p.condition_type}" has no per-user owner, so personal scope is a label here - this watch evaluates company-wide, not just your records.`
+          : undefined;
+
+      return {
+        success: true,
+        trigger: data,
+        ...(note ? { note } : {}),
+        render: listTriggersRender(data ? [data as unknown as Record<string, unknown>] : []),
+      };
+    },
+  },
+
+  list_triggers: {
+    title: "List Triggers",
+    description:
+      "The 'what is Founders OS watching' surface. Lists triggers grouped by enabled/disabled with data/connector and 'installed by automation' badges. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      include_disabled: z.boolean().optional().describe("Include disabled triggers. Default true."),
+    }),
+    handler: async (ctx: ToolContext, { include_disabled = true }: { include_disabled?: boolean }) => {
+      let q = ctx.db
+        .from("triggers")
+        .select(TRIGGER_SELECT + ", cadence_hint, digest, created_at")
+        .eq("company_id", ctx.companyId)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false });
+      if (!include_disabled) q = q.eq("enabled", true);
+      const { data, error } = await q;
+      if (error) throw new Error(`Failed to list triggers: ${error.message}`);
+      const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+      return { triggers: rows, count: rows.length, render: listTriggersRender(rows) };
+    },
+  },
+
+  update_trigger: {
+    title: "Update Trigger",
+    description:
+      "Enable/disable a trigger, retune its params or cadence, or change its action. Re-validates on change. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      trigger_id: z.string().uuid().describe("The trigger to update."),
+      enabled: z.boolean().optional(),
+      params: z.record(z.string(), z.unknown()).optional(),
+      cadence_hint: z.enum(["hourly", "daily", "weekly"]).optional(),
+      action_type: z.enum(["run_playbook", "create_task", "notify"]).optional(),
+      playbook_id: z.string().uuid().optional(),
+      action_params: z.record(z.string(), z.unknown()).optional(),
+    }),
+    handler: async (ctx: ToolContext, p: {
+      trigger_id: string; enabled?: boolean; params?: Record<string, unknown>;
+      cadence_hint?: "hourly" | "daily" | "weekly"; action_type?: "run_playbook" | "create_task" | "notify";
+      playbook_id?: string; action_params?: Record<string, unknown>;
+    }) => {
+      const { data: existing, error: exErr } = await ctx.db
+        .from("triggers")
+        .select(TRIGGER_SELECT)
+        .eq("company_id", ctx.companyId)
+        .eq("id", p.trigger_id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (exErr) throw new Error(`Failed to load trigger: ${exErr.message}`);
+      if (!existing) throw new Error(`Trigger ${p.trigger_id} not found.`);
+      const cur = existing as TriggerRow;
+
+      const nextActionType = p.action_type ?? (cur.action_type as TriggerConfig["action_type"]);
+      const nextPlaybookId = p.playbook_id ?? cur.playbook_id;
+      if (p.action_type !== undefined || p.playbook_id !== undefined) {
+        await validateTriggerConfig(ctx, {
+          condition_source: cur.condition_source,
+          condition_type: cur.condition_type,
+          connector: cur.connector,
+          action_type: nextActionType,
+          playbook_id: nextPlaybookId,
+        });
+      }
+
+      const patch: Record<string, unknown> = {};
+      if (p.enabled !== undefined) patch.enabled = p.enabled;
+      if (p.params !== undefined) patch.params = p.params;
+      if (p.cadence_hint !== undefined) patch.cadence_hint = p.cadence_hint;
+      if (p.action_type !== undefined) patch.action_type = p.action_type;
+      if (p.playbook_id !== undefined) patch.playbook_id = p.playbook_id;
+      if (p.action_params !== undefined) patch.action_params = p.action_params;
+      if (Object.keys(patch).length === 0) throw new Error("Nothing to update.");
+
+      const { data, error } = await ctx.db
+        .from("triggers")
+        .update(patch)
+        .eq("company_id", ctx.companyId)
+        .eq("id", p.trigger_id)
+        .select(TRIGGER_SELECT + ", cadence_hint")
+        .maybeSingle();
+      if (error) throw new Error(`Failed to update trigger: ${error.message}`);
+      return { success: true, trigger: data };
+    },
+  },
+
+  delete_trigger: {
+    title: "Delete Trigger",
+    description: "Soft-delete a trigger (sets deleted_at). It stops being evaluated. Reversible via restore until purged.",
+    parameters: z.object({
+      trigger_id: z.string().uuid().describe("The trigger to delete."),
+    }),
+    handler: async (ctx: ToolContext, { trigger_id }: { trigger_id: string }) => {
+      const { data, error } = await ctx.db
+        .from("triggers")
+        .update({ deleted_at: new Date().toISOString(), enabled: false })
+        .eq("company_id", ctx.companyId)
+        .eq("id", trigger_id)
+        .is("deleted_at", null)
+        .select("id")
+        .maybeSingle();
+      if (error) throw new Error(`Failed to delete trigger: ${error.message}`);
+      if (!data) throw new Error(`Trigger ${trigger_id} not found or already deleted.`);
+      // A soft-delete does not cascade to trigger_fires (FK cascade is
+      // hard-delete only), so dismiss any pending inbox rows for this watch
+      // to avoid orphans surfacing in list_trigger_fires.
+      const dismissed_fires = await dismissFiresForTriggers(ctx, [trigger_id]);
+      return { success: true, deleted: trigger_id, ...(dismissed_fires > 0 ? { dismissed_fires } : {}) };
+    },
+  },
+
+  evaluate_triggers: {
+    title: "Evaluate Triggers",
+    description:
+      "Run all enabled triggers for the company. Data conditions are evaluated, deduped, and fire-claimed server-side; the response's `fired` array lists those that newly fired with a resolved-action reference and brief. Connector conditions are NOT fired here; they are returned in `connector_checks` for you to run the named connector tool and then call report_trigger_observation. Set dry_evaluate true to see what would fire without recording it. Set write_inbox true ONLY when the user wants the fires staged into the trigger_fires inbox for later review (e.g. 'check my watches and stage them', or to test the run pipeline); a normal live check leaves write_inbox false and just returns the fires. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      condition_types: z.array(z.string()).optional().describe("Restrict to these condition_types. Omit for all."),
+      dry_evaluate: z.boolean().optional().describe("Evaluate without fire-claiming (no state writes). Default false."),
+      write_inbox: z.boolean().optional().describe("Also upsert newly fired data conditions into the trigger_fires inbox for later review. Default false (a live check returns fires without queuing them). Ignored when dry_evaluate is true."),
+    }),
+    handler: async (ctx: ToolContext, { condition_types, dry_evaluate = false, write_inbox = false }: { condition_types?: string[]; dry_evaluate?: boolean; write_inbox?: boolean }) => {
+      // Detection is the shared core (also used by the detect tick). By
+      // default the tool returns fires in its response without queuing them;
+      // write_inbox lets a session stage them (a dry run never writes).
+      const { evaluated, fired, connectorTriggers, errors } = await evaluateDataTriggers(ctx, {
+        conditionTypes: condition_types,
+        dryEvaluate: dry_evaluate,
+        writeInbox: write_inbox && !dry_evaluate,
+      });
+
+      // Build connector checks from the enabled connector-source triggers.
+      // A misconfigured connector check is isolated, not fatal — same
+      // contract as the data loop.
+      const connector_checks: ConnectorCheck[] = [];
+      for (const t of connectorTriggers) {
+        try {
+          connector_checks.push(buildConnectorCheck(t));
+        } catch (e) {
+          errors.push({ trigger_id: t.id, name: t.name, error: e instanceof Error ? e.message : "unknown error" });
+        }
+      }
+
+      return {
+        evaluated,
+        fired,
+        fired_count: fired.length,
+        connector_checks,
+        connector_check_count: connector_checks.length,
+        errors,
+        error_count: errors.length,
+        dry_evaluate,
+        render: {
+          tier_1: {
+            format_hint: "status_groups",
+            instructions: {
+              scope: "Show the fired triggers (each with its brief and action) and the connector_checks still to run.",
+              format: "Two groups: 'Fired now' (with brief + the action to route through preview_action) and 'Checks to run' (connector + what to fetch). Keep it compact.",
+              forbidden: "Do not perform any fired action directly; route each through preview_action first.",
+            },
+          },
+          tier_3: {
+            markdown:
+              `Fired: ${fired.length}. Connector checks to run: ${connector_checks.length}.` +
+              (fired.length ? "\n\n" + fired.map((f) => `- ${f.name}: ${f.brief}`).join("\n") : ""),
+          },
+        } satisfies Render,
+      };
+    },
+  },
+
+  report_trigger_observation: {
+    title: "Report Trigger Observation",
+    description:
+      "Report the result of running a connector check from evaluate_triggers. The server computes the dedup fingerprint and fire-claims, so firing stays authoritative on the server even though you fetched the data. Pass trigger_id, rows (one { id } per matching external row), and state (the per-condition material state, e.g. a days-overdue bucket or the latest matched item id). Returns whether the trigger fired plus the resolved-action reference. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      trigger_id: z.string().uuid().describe("The trigger from the connector check."),
+      rows: z.array(z.object({ id: z.string() })).describe("Matching external rows, normalized to ids. Empty array = no match (records the all-clear)."),
+      state: z.string().optional().describe("Per-condition material state value (e.g. days-overdue bucket, latest matched item id). Folded into dedup so a worsening situation re-fires."),
+      brief: z.string().optional().describe("Optional short human description of what was observed."),
+    }),
+    handler: async (ctx: ToolContext, p: { trigger_id: string; rows: { id: string }[]; state?: string; brief?: string }) => {
+      const { data: t, error } = await ctx.db
+        .from("triggers")
+        .select(TRIGGER_SELECT)
+        .eq("company_id", ctx.companyId)
+        .eq("id", p.trigger_id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (error) throw new Error(`Failed to load trigger: ${error.message}`);
+      if (!t) throw new Error(`Trigger ${p.trigger_id} not found.`);
+      const trig = t as TriggerRow;
+      if (trig.condition_source !== "connector") {
+        throw new Error(`Trigger ${p.trigger_id} is a data condition; it is evaluated server-side, not reported.`);
+      }
+
+      const matched = p.rows.length > 0;
+      const fp = fingerprint(p.rows.map((r) => r.id), p.state ?? "");
+      const claimed = await claimFire(ctx, trig.id, fp, matched);
+
+      const brief = p.brief ?? `${p.rows.length} match${p.rows.length === 1 ? "" : "es"} for ${trig.condition_type}`;
+      if (matched && claimed) {
+        await writeAuditLog(ctx, {
+          action: "trigger_fired",
+          entity_type: "trigger",
+          entity_id: trig.id,
+          metadata: { condition_type: trig.condition_type, brief, source: "connector" },
+        });
+        return { fired: true, ...resolvedActionRef(trig, brief) };
+      }
+      return {
+        fired: false,
+        trigger_id: trig.id,
+        reason: !matched ? "No matching rows; recorded the all-clear." : "No change since the last fire (deduped).",
+      };
+    },
+  },
+
+  list_trigger_fires: {
+    title: "List Trigger Fires",
+    description:
+      "Drain the trigger_fires inbox: the watches that fired while you were away, written by the headless detect tick. Each row carries the brief and the resolved action to route through preview_action. Defaults to pending (unhandled) fires; pass status to filter. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      status: z.enum(["pending", "acted", "dismissed", "all"]).optional().describe("Filter by status. Default 'pending'."),
+    }),
+    handler: async (ctx: ToolContext, { status = "pending" }: { status?: "pending" | "acted" | "dismissed" | "all" }) => {
+      let q = ctx.db
+        .from("trigger_fires")
+        .select("id, trigger_id, condition_type, brief, action, status, created_at")
+        .eq("company_id", ctx.companyId)
+        .order("created_at", { ascending: false });
+      if (status !== "all") q = q.eq("status", status);
+      const { data, error } = await q;
+      if (error) throw new Error(`Failed to list trigger fires: ${error.message}`);
+      const rows = (data ?? []) as Array<Record<string, unknown>>;
+
+      const md = rows.length
+        ? "| Status | What fired | Next |\n|---|---|---|\n" +
+          rows.map((r) => `| ${r.status} | ${r.brief} | route through preview_action |`).join("\n")
+        : "Inbox empty. Nothing fired while you were away.";
+
+      return {
+        fires: rows,
+        count: rows.length,
+        render: {
+          tier_1: {
+            format_hint: "status_groups",
+            instructions: {
+              scope: "Show what fired while away, each with its brief and the action to route through preview_action.",
+              format: "A list of fires with the brief as the headline and the resolved action as a next-step line. Keep it compact.",
+              forbidden: "Do not perform any fired action directly; route each through preview_action first.",
+            },
+          },
+          tier_3: { markdown: md },
+        } satisfies Render,
+      };
+    },
+  },
+
+  resolve_trigger_fire: {
+    title: "Resolve Trigger Fire",
+    description:
+      "Clear an inbox fire after you have dealt with it. Set status to 'acted' once you have routed the fire through preview_action (it has become a staged approval), or 'dismissed' when the fire is noise and needs no action. Marking it stamps acted_at/acted_by and audits the resolution, so a drained fire stops reappearing in the next session's briefing. This is the interactive counterpart to the autonomous runner, which marks fires 'acted' itself. A worsening re-fire still re-opens the row to 'pending'.",
+    parameters: z.object({
+      fire_id: z.string().uuid().describe("UUID of the trigger_fires row (from list_trigger_fires)."),
+      status: z.enum(["acted", "dismissed"]).describe("'acted' when routed through preview_action; 'dismissed' when it is noise."),
+      note: z.string().optional().describe("Optional short reason, recorded on the audit entry."),
+    }),
+    handler: async (ctx: ToolContext, { fire_id, status, note }: { fire_id: string; status: "acted" | "dismissed"; note?: string }) => {
+      const { data, error } = await ctx.db
+        .from("trigger_fires")
+        .update({ status, acted_at: new Date().toISOString(), acted_by: ctx.userId })
+        .eq("company_id", ctx.companyId)
+        .eq("id", fire_id)
+        .select("id, trigger_id, condition_type, brief, status")
+        .maybeSingle();
+      if (error) throw new Error(`Failed to resolve trigger fire: ${error.message}`);
+      if (!data) throw new Error(`Trigger fire ${fire_id} not found.`);
+      const row = data as Record<string, unknown>;
+
+      await writeAuditLog(ctx, {
+        action: "trigger_fire_resolved",
+        entity_type: "trigger_fire",
+        entity_id: fire_id,
+        metadata: { status, condition_type: row.condition_type, trigger_id: row.trigger_id, ...(note ? { note } : {}) },
+      });
+
+      return { success: true, fire: row };
+    },
+  },
+};
+
+export function registerTriggerTools(server: McpServer, ctx: ToolContext): void {
+  registerToolMap(server, triggerTools, ctx);
+}

@@ -40,6 +40,19 @@ export async function writeAuditLog(
   entry: AuditEntry
 ): Promise<void> {
   try {
+    // Stamp the acting PRINCIPAL into metadata. actor_id is the identity
+    // (the same getUserId() for both an interactive session and an
+    // autonomous run on the same install), so it alone cannot tell the
+    // unattended agent apart from the human. Record actor_kind + run_id
+    // ONLY for the autonomous principal; an absent actor_kind means
+    // interactive, matching the "absent actor is interactive" convention
+    // in types/context.ts. This is what lets surfaces like list_deleted
+    // attribute "the agent did this" without a per-table deleted_by column.
+    let metadata = entry.metadata ?? null;
+    if (ctx.actor?.kind === "autonomous") {
+      metadata = { ...(metadata ?? {}), actor_kind: "autonomous", run_id: ctx.actor.runId };
+    }
+
     // Use ctx.admin: audit_log writes must succeed even under hosted
     // mode where ctx.db may not have INSERT on audit_log via RLS.
     const { error } = await ctx.admin.from("audit_log").insert({
@@ -50,7 +63,7 @@ export async function writeAuditLog(
       entity_id: entry.entity_id,
       before_state: entry.before_state ?? null,
       after_state: entry.after_state ?? null,
-      metadata: entry.metadata ?? null,
+      metadata,
     });
     if (error) {
       console.error(
@@ -115,4 +128,18 @@ export const AUDIT_DOMAINS: Record<string, string[]> = {
   ],
   access: ["set_financial_access"],
   members: ["add_member", "set_member_owner", "remove_member"],
+  governance: [
+    "action_previewed",
+    "action_held",
+    "action_approved",
+    "action_rejected",
+    "action_executed",
+    "action_dispatched",
+    "dispatch_denied",
+    "guardrail_policy_updated",
+    "reconcile_flagged",
+  ],
+  triggers: [
+    "trigger_fired",
+  ],
 };

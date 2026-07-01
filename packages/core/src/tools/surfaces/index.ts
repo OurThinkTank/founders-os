@@ -11,6 +11,12 @@
 //   LinkedIn draft format
 // get_stuck_list    - stale, blocked, and overdue tasks with
 //   triage suggestions
+// get_project_history - chronological timeline of a project's
+//   memories (defaults to kind='checkpoint'); the chronological
+//   companion to the semantic memory_recall
+// checkpoint        - end-of-session bookend to get_session_start;
+//   returns the ordered checkpoint procedure + the exact memory
+//   call to make + the previous checkpoint for continuity
 //
 // Pattern A (stateless) - each handler creates its own DB client.
 // ============================================================
@@ -37,6 +43,14 @@ const cardEntityType = z.enum([
   "contact",
   "transaction",
 ]);
+
+// Suggested path for the long-form session handoff doc, written into the
+// project repo (not founders-os). Falls back to a generic name when the
+// project tag is unknown.
+function handoffDocHint(project: string | undefined, today: string): string {
+  const slug = project ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "session";
+  return `docs/${slug}-session-handoff-${today}.md`;
+}
 
 export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
@@ -342,9 +356,10 @@ export const surfaceTools: ToolMap = {
               "responses into a single briefing.",
             format:
               "use time_of_day for the greeting (e.g. 'Good afternoon'). Order " +
-              "sections: overdue and blocked items first, then upcoming work, " +
-              "then recent CRM activity, then feed headlines. Apply the standard " +
-              "color conventions for status emphasis.",
+              "sections: watches that fired while away (the trigger_fires inbox) " +
+              "and unread notifications first, then overdue and blocked items, " +
+              "then upcoming work, then recent CRM activity, then feed headlines. " +
+              "Apply the standard color conventions for status emphasis.",
             forbidden:
               "do not omit any tool from call_these_tools; do not assume morning " +
               "in the greeting (use time_of_day).",
@@ -363,6 +378,8 @@ export const surfaceTools: ToolMap = {
         client_capabilities: resolvedClientCapabilities,
         contract_version: RENDERING_CONTRACT_VERSION,
         call_these_tools: [
+          "list_trigger_fires",
+          "list_notifications",
           "get_task_summary",
           "get_stuck_list",
           "get_dashboard",
@@ -850,6 +867,285 @@ export const surfaceTools: ToolMap = {
         // FIX NEW-06: renamed from overdue_todo → overdue since it now includes in_progress
         overdue: overdueRes.data?.length ?? 0,
         render,
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // checkpoint
+  // ──────────────────────────────────────────────────────────
+  checkpoint: {
+    title: "Checkpoint",
+    description:
+      "End-of-session bookend to get_session_start. Call when the user says 'checkpoint', " +
+      "'let's checkpoint', or 'wrap up this session'. Returns the ordered checkpoint procedure " +
+      "for the agent to execute (summarize, capture repo changes as commit links, store the " +
+      "record, propose task candidates, write the handoff doc) plus the exact memory call to " +
+      "make and the previous checkpoint for continuity. This tool does not write anything " +
+      "itself - the agent performs the steps. Pass the project tag so the previous checkpoint " +
+      "can be loaded; if omitted, ask the user which project before storing.",
+    parameters: z.object({
+      project: z
+        .string()
+        .optional()
+        .describe("Project tag for this session (e.g. 'founders-os'). Omit only if unknown - then ask the user."),
+      scope: z
+        .enum(["org", "personal"])
+        .optional()
+        .describe("Scope to store the checkpoint under. Defaults to 'org' (team-visible)."),
+      timezone: z
+        .string()
+        .optional()
+        .describe("IANA timezone (e.g. 'America/New_York') for the handoff-doc date."),
+    }),
+    handler: async (ctx: ToolContext, {
+      project,
+      scope = "org",
+      timezone,
+    }: {
+      project?: string;
+      scope?: "org" | "personal";
+      timezone?: string;
+    }) => {
+      const today = getLocalDateStr(timezone);
+
+      // Pull the most recent checkpoint for this project so the agent can carry
+      // forward unfinished OPEN/NEXT items. Visibility mirrors get_project_history.
+      let previous_checkpoint: {
+        id: string;
+        content: string;
+        created_at: string;
+      } | null = null;
+
+      if (project) {
+        const { data } = await ctx.db
+          .from("memories")
+          .select("id, content, created_at")
+          .eq("company_id", ctx.companyId)
+          .eq("project", project)
+          .eq("metadata->>kind", "checkpoint")
+          .or(`user_id.eq.${ctx.userId},user_id.eq.org`)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (Array.isArray(data) && data.length > 0) {
+          previous_checkpoint = data[0] as { id: string; content: string; created_at: string };
+        }
+      }
+
+      return {
+        today,
+        project: project ?? null,
+        scope,
+        procedure: [
+          {
+            step: 1,
+            action: "Summarize the session in chat",
+            detail: "A concise review of what was done this session, for quick human review. Conversational, not a report.",
+          },
+          {
+            step: 2,
+            action: "Confirm the project tag",
+            detail: project
+              ? `Using project '${project}'.`
+              : "No project was provided. Ask the user which project this checkpoint belongs to before storing.",
+          },
+          {
+            step: 3,
+            action: "Capture repo changes as commit links, not prose",
+            detail: "For each repo touched, record repo, branch, and commit SHAs (with links) and whether the work is committed, pushed, or still uncommitted. Read actual git/connector state rather than recalling it.",
+          },
+          {
+            step: 4,
+            action: "Store the checkpoint record",
+            detail: "Call memory_summarize_and_store using the params in `store_with`. Structure the body with the sections in `store_with.body_sections`.",
+          },
+          {
+            step: 5,
+            action: "Propose task candidates (optional)",
+            detail: "Scan the session and the OPEN/NEXT items for work that should become tasks. Propose them; create_task and link only on user approval. Skip silently if nothing qualifies.",
+          },
+          {
+            step: 6,
+            action: "Write the handoff doc",
+            detail: `Write a detailed handoff markdown file to '${handoffDocHint(project, today)}' inside the project repo. Put its path in the stored checkpoint body.`,
+          },
+        ],
+        store_with: {
+          tool: "memory_summarize_and_store",
+          params: {
+            scope,
+            project: project ?? "<ask the user>",
+            kind: "checkpoint",
+            resolution: "confirm",
+          },
+          body_sections: [
+            "DONE / SHIPPED this session",
+            "DECISIONS (and why)",
+            "REPO CHANGES (branch + commit links)",
+            "VERIFICATION (tests, typecheck, manual checks)",
+            "OPEN / NEXT (carryovers)",
+            "Handoff doc path",
+          ],
+          note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries.",
+        },
+        handoff_doc_hint: handoffDocHint(project, today),
+        previous_checkpoint,
+        guidance:
+          "Review the previous_checkpoint OPEN/NEXT items and note which were resolved this " +
+          "session and which carry forward. Retrieve the full timeline later with get_project_history.",
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // get_project_history
+  // ──────────────────────────────────────────────────────────
+  get_project_history: {
+    title: "Get Project History",
+    description:
+      "Chronological timeline of stored memories for a single project. Use to review " +
+      "how a project has progressed over time, to answer 'where did we leave off', or " +
+      "to assemble a project narrative. Defaults to checkpoint entries (kind='checkpoint'); " +
+      "pass kind='all' to include every memory for the project. Ordered newest-first. " +
+      "This is the chronological companion to memory_recall, which is semantic and ranked. " +
+      "Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+    parameters: z.object({
+      project: z
+        .string()
+        .describe("Project tag to load history for (e.g. 'founders-os', 'marching-maestro')."),
+      kind: z
+        .string()
+        .optional()
+        .describe(
+          "Filter by memory kind stored in metadata.kind. Defaults to 'checkpoint'. " +
+          "Pass 'all' to return every memory for the project regardless of kind."
+        ),
+      scope: z
+        .enum(["org", "personal", "both"])
+        .optional()
+        .describe("Which memories to include: 'org', 'personal', or 'both' (default)."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max entries to return (1-50). Defaults to 20."),
+      from_date: z
+        .string()
+        .optional()
+        .describe("ISO 8601 timestamp. Only entries created on or after this date."),
+      to_date: z
+        .string()
+        .optional()
+        .describe("ISO 8601 timestamp. Only entries created on or before this date."),
+    }),
+    handler: async (ctx: ToolContext, {
+      project,
+      kind = "checkpoint",
+      scope = "both",
+      limit = 20,
+      from_date,
+      to_date,
+    }: {
+      project: string;
+      kind?: string;
+      scope?: "org" | "personal" | "both";
+      limit?: number;
+      from_date?: string;
+      to_date?: string;
+    }) => {
+      let q = ctx.db
+        .from("memories")
+        .select("id, user_id, scope, project, content, source_tool, metadata, created_at")
+        .eq("company_id", ctx.companyId)
+        .eq("project", project);
+
+      // Visibility: org memories carry user_id='org'; personal carry the
+      // caller's user_id. Mirrors the memory_forget .or() pattern.
+      if (scope === "org") {
+        q = q.eq("user_id", "org");
+      } else if (scope === "personal") {
+        q = q.eq("user_id", ctx.userId);
+      } else {
+        q = q.or(`user_id.eq.${ctx.userId},user_id.eq.org`);
+      }
+
+      // kind='all' means no kind filter; otherwise match metadata.kind exactly.
+      if (kind !== "all") {
+        q = q.eq("metadata->>kind", kind);
+      }
+
+      if (from_date) q = q.gte("created_at", from_date);
+      if (to_date) q = q.lte("created_at", to_date);
+
+      const { data, error } = await q
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (error) throw new Error(`Failed to load project history: ${error.message}`);
+
+      const entries = (data ?? []) as Array<{
+        id: string;
+        scope: string;
+        project: string | null;
+        content: string;
+        source_tool: string | null;
+        metadata: Record<string, unknown> | null;
+        created_at: string;
+      }>;
+
+      // tier_3 markdown: a compact dated timeline. Excerpt the first line so
+      // the table stays readable; the full content is in the structured array.
+      const excerpt = (text: string): string => {
+        const firstLine = text.split("\n")[0].trim();
+        const clipped = firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine;
+        return clipped.replace(/\|/g, "\\|");
+      };
+
+      const markdownTable = entries.length
+        ? `| Date | Scope | Entry |\n|------|-------|-------|\n` +
+          entries
+            .map((e) => `| ${e.created_at.slice(0, 10)} | ${e.scope} | ${excerpt(e.content)} |`)
+            .join("\n")
+        : `No ${kind === "all" ? "" : kind + " "}history found for project "${project}".`;
+
+      const render: Render = {
+        tier_1: {
+          format_hint: "timeline",
+          instructions: {
+            scope:
+              "render the `history` array as a vertical timeline ordered newest-first. " +
+              "Show created_at (date), scope, and the entry content for each item.",
+            format:
+              "vertical timeline with a dated marker per entry; show the first line as the " +
+              "entry headline and the rest as collapsible/secondary detail. Keep scope as a small chip.",
+            forbidden:
+              "do not reorder by another field; do not collapse multiple entries into one; " +
+              "do not summarize the list as prose when an artifact tool is available.",
+          },
+        },
+        tier_3: {
+          markdown: markdownTable,
+        },
+        do_not: [
+          "Do not invent new color meanings; use the standard color conventions.",
+          "For 2 or fewer entries, inline rendering is fine.",
+        ],
+      };
+
+      return {
+        project,
+        kind,
+        scope,
+        count: entries.length,
+        history: entries,
+        render,
+        guidance:
+          "These are point-in-time snapshots; repos, tasks, and current state may have " +
+          "moved on since each entry was written. If an entry conflicts with what you now " +
+          "observe, investigate before trusting it, and correct the memory if you can " +
+          "determine the cause.",
       };
     },
   },

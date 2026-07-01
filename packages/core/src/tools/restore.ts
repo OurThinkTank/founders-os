@@ -199,6 +199,58 @@ interface DeletedItem {
   parent_name?: string;
 }
 
+// ── Deletion attribution (who soft-deleted each trash item) ───
+// Sourced from audit_log, not a per-table deleted_by column: every
+// soft-delete writes a `delete_<type>` audit entry, and writeAuditLog
+// stamps actor_kind=autonomous (+ run_id) for the unattended agent. So
+// the trail already says who deleted what; here we fold it onto the trash
+// rows. Items with no matching audit entry (e.g. a cascade soft-delete
+// that did not audit per row) are reported as "unknown" rather than
+// guessed.
+
+export type DeletedByKind = "autonomous" | "interactive" | "unknown";
+
+export interface DeletionAttribution {
+  deleted_by_kind: DeletedByKind;
+  deleted_by_actor: string | null;
+  deleted_run_id: string | null;
+}
+
+export interface AuditDeleteRow {
+  entity_id: string;
+  actor_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string | null;
+}
+
+/**
+ * Index audit delete-rows by entity_id, keeping the latest per entity.
+ * Caller passes rows ordered created_at DESC, so the first seen wins.
+ */
+export function indexLatestDeleteAudit(rows: AuditDeleteRow[]): Map<string, AuditDeleteRow> {
+  const idx = new Map<string, AuditDeleteRow>();
+  for (const r of rows) {
+    if (r.entity_id && !idx.has(r.entity_id)) idx.set(r.entity_id, r);
+  }
+  return idx;
+}
+
+/** Resolve a single item's attribution from the audit index. */
+export function attributionFor(
+  entityId: string,
+  idx: Map<string, AuditDeleteRow>
+): DeletionAttribution {
+  const a = idx.get(entityId);
+  if (!a) return { deleted_by_kind: "unknown", deleted_by_actor: null, deleted_run_id: null };
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const kind: DeletedByKind = meta.actor_kind === "autonomous" ? "autonomous" : "interactive";
+  return {
+    deleted_by_kind: kind,
+    deleted_by_actor: a.actor_id ?? null,
+    deleted_run_id: typeof meta.run_id === "string" ? meta.run_id : null,
+  };
+}
+
 function toDeletedItem(type: RestorableEntity, row: Record<string, unknown>): DeletedItem {
   const id = row.id as string;
   let label: string;
@@ -785,7 +837,7 @@ export const restoreTools: ToolMap = {
   list_deleted: {
     title: "List Deleted Items",
     description:
-      "List recently soft-deleted items (the recoverable trash) for the current company so the user can pick one to restore or permanently delete. Returns each item's type, a human-readable label, when it was deleted, and the date it will be auto-purged. Defaults to the last 7 days with leftover demo fixtures hidden; pass days to widen the window, entity_type to filter, or include_demo to show demo data. Each item carries entity_id for use with restore_item or purge_item - present items to the user by label, never by id. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
+      "List recently soft-deleted items (the recoverable trash) for the current company so the user can pick one to restore or permanently delete. Returns each item's type, a human-readable label, who deleted it (deleted_by_kind: 'autonomous' = the unattended agent, 'interactive' = a person, 'unknown' = no audit record), when it was deleted, and the date it will be auto-purged. Defaults to the last 7 days with leftover demo fixtures hidden; pass days to widen the window, entity_type to filter, include_demo to show demo data, or deleted_by_kind: 'autonomous' to answer \"what did the agent delete?\". Each item carries entity_id for use with restore_item or purge_item - present items to the user by label, never by id. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({
       days: z
         .number()
@@ -799,6 +851,12 @@ export const restoreTools: ToolMap = {
         .boolean()
         .optional()
         .describe("Include leftover demo (demorun-) fixtures. Defaults to false."),
+      deleted_by_kind: z
+        .enum(["autonomous", "interactive"])
+        .optional()
+        .describe(
+          "Filter by who deleted the item: 'autonomous' = the unattended agent (use this for \"what did the agent delete?\"), 'interactive' = a human session. Omit for all. Items whose deleter is unknown (e.g. cascade deletes) are excluded when this filter is set."
+        ),
       limit: z
         .number()
         .optional()
@@ -808,11 +866,13 @@ export const restoreTools: ToolMap = {
       days = 7,
       entity_type,
       include_demo = false,
+      deleted_by_kind,
       limit = 100,
     }: {
       days?: number;
       entity_type?: RestorableEntity;
       include_demo?: boolean;
+      deleted_by_kind?: "autonomous" | "interactive";
       limit?: number;
     }) => {
       const supabase = ctx.db;
@@ -849,9 +909,31 @@ export const restoreTools: ToolMap = {
       all.sort((a, b) =>
         a.deleted_at < b.deleted_at ? 1 : a.deleted_at > b.deleted_at ? -1 : 0
       );
-      const total = all.length;
 
-      const items = all.slice(0, limit).map((i) => ({
+      // Attribution: fold in who soft-deleted each item from the audit
+      // trail. Read via ctx.admin (audit_log SELECT is RLS-denied to the
+      // user-scoped client under hosted mode) and scope by company_id since
+      // admin bypasses RLS. One bounded query (the trash is capped above).
+      const ids = all.map((i) => i.entity_id);
+      let auditIdx = new Map<string, AuditDeleteRow>();
+      if (ids.length > 0) {
+        const { data: auditRows } = await ctx.admin
+          .from("audit_log")
+          .select("entity_id, actor_id, metadata, created_at")
+          .eq("company_id", companyId)
+          .in("entity_id", ids)
+          .like("action", "delete_%")
+          .order("created_at", { ascending: false });
+        auditIdx = indexLatestDeleteAudit((auditRows ?? []) as AuditDeleteRow[]);
+      }
+
+      let enriched = all.map((i) => ({ item: i, attr: attributionFor(i.entity_id, auditIdx) }));
+      if (deleted_by_kind) {
+        enriched = enriched.filter((e) => e.attr.deleted_by_kind === deleted_by_kind);
+      }
+      const total = enriched.length;
+
+      const items = enriched.slice(0, limit).map(({ item: i, attr }) => ({
         entity_type: i.entity_type,
         entity_id: i.entity_id,
         label: i.label,
@@ -859,28 +941,35 @@ export const restoreTools: ToolMap = {
         recoverable_until: new Date(
           new Date(i.deleted_at).getTime() + 30 * 86_400_000
         ).toISOString(),
+        deleted_by_kind: attr.deleted_by_kind,
+        deleted_run_id: attr.deleted_run_id,
       }));
 
+      const byKindLabel = (k: DeletedByKind) =>
+        k === "autonomous" ? "automation" : k === "interactive" ? "a person" : "unknown";
+
       const markdown = items.length
-        ? "| Type | Item | Deleted | Recoverable until |\n|------|------|---------|-------------------|\n" +
+        ? "| Type | Item | Deleted by | Deleted | Recoverable until |\n|------|------|------------|---------|-------------------|\n" +
           items
             .map(
               (i) =>
-                `| ${i.entity_type.replace(/_/g, " ")} | ${i.label} | ${i.deleted_at.slice(0, 10)} | ${i.recoverable_until.slice(0, 10)} |`
+                `| ${i.entity_type.replace(/_/g, " ")} | ${i.label} | ${byKindLabel(i.deleted_by_kind)} | ${i.deleted_at.slice(0, 10)} | ${i.recoverable_until.slice(0, 10)} |`
             )
             .join("\n")
-        : `No deleted items in the last ${days} day${days === 1 ? "" : "s"}.`;
+        : deleted_by_kind === "autonomous"
+          ? `The agent has not deleted anything in the last ${days} day${days === 1 ? "" : "s"}.`
+          : `No deleted items in the last ${days} day${days === 1 ? "" : "s"}.`;
 
       const render: Render = {
         tier_1: {
           format_hint: "table",
           instructions: {
             scope:
-              "render the `items` array as the recoverable trash, grouped by entity_type; show label, deleted_at, and recoverable_until per row, with total as the headline.",
+              "render the `items` array as the recoverable trash, grouped by entity_type; show label, who deleted it (deleted_by_kind: 'automation' for autonomous, 'a person' for interactive, 'unknown' otherwise), deleted_at, and recoverable_until per row, with total as the headline.",
             format:
-              "table or grouped list with a type label per group; show the human label prominently and the deleted / recoverable dates as secondary detail.",
+              "table or grouped list with a type label per group; show the human label prominently, surface deleted_by_kind as a small badge (call out automation-deleted items so the user can see what the agent removed), and keep the deleted / recoverable dates as secondary detail. Give every row a one-click Restore action wired with sendPrompt(`restore the <entity_type> \"<label>\"`) so the user can recall it without typing an id, and offer a single 'Restore all' affordance wired with sendPrompt('restore all items in the trash'). Recovery is the primary action; keep it visually dominant.",
             forbidden:
-              "do not display entity_id to the user; do not invent items not in the array; do not present this as full history - it is only the recoverable window.",
+              "do not display entity_id or deleted_run_id to the user; do not invent items not in the array; do not present this as full history - it is only the recoverable window; do not offer permanent-delete (purge) as a primary action - recovery is the point of this view.",
           },
         },
         tier_3: { markdown },
@@ -895,8 +984,9 @@ export const restoreTools: ToolMap = {
         total,
         window_days: days,
         demo_hidden: !include_demo,
+        deleted_by_kind: deleted_by_kind ?? null,
         hint:
-          "To recover an item, call restore_item with its entity_type and entity_id. To permanently delete it, call purge_item (it returns a confirmation prompt first).",
+          "To recover an item, call restore_item with its entity_type and entity_id. To permanently delete it, call purge_item (it returns a confirmation prompt first). Pass deleted_by_kind: 'autonomous' to see only what the agent deleted.",
         render,
       };
     },

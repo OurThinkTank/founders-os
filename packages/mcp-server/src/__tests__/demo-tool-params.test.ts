@@ -36,6 +36,8 @@ import {
   interactionTools,
   dashboardTools,
   playbookTools,
+  governanceTools,
+  triggerTools,
   tagTools,
   memberTools,
   surfaceTools,
@@ -58,6 +60,8 @@ const allTools = {
   ...interactionTools,
   ...dashboardTools,
   ...playbookTools,
+  ...governanceTools,
+  ...triggerTools,
   ...tagTools,
   ...memberTools,
   ...surfaceTools,
@@ -67,9 +71,10 @@ const allTools = {
 const toolParams = new Map<string, Set<string>>();
 for (const [name, def] of Object.entries(allTools)) {
   const schema = def?.parameters;
-  // Plain ZodObject exposes `.shape`; a wrapped schema (ZodEffects from
-  // `.transform()`/`.refine()`) exposes it under `_def.schema.shape`.
-  const shape = schema?.shape ?? schema?._def?.schema?.shape ?? {};
+  // In zod 4, `.refine()` no longer wraps an object in ZodEffects (checks
+  // live on the schema), so a tool's parameters object exposes `.shape`
+  // directly. Tool parameters are always a ZodObject.
+  const shape = schema?.shape ?? {};
   toolParams.set(name, new Set(Object.keys(shape)));
 }
 

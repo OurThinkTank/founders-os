@@ -1,6 +1,6 @@
 {
   "name": "@ourthinktank/founders-os-core",
-  "version": "0.14.0",
+  "version": "1.2.0",
   "description": "Transport-agnostic core for Founders OS — CRM, tasks, finances, feeds, memory, and visual surface tools, exposed as raw ToolMaps for any MCP transport.",
   "author": "OurThinkTank",
   "license": "MIT",
@@ -29,11 +29,12 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.107.0",
     "@aws-sdk/client-bedrock-runtime": "^3.800.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@supabase/supabase-js": "^2.49.4",
     "openai": "^4.100.0",
-    "zod": "^3.25.76"
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

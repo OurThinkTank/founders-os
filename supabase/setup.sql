@@ -990,6 +990,271 @@ create trigger trg_audit_log_immutable
 
 
 -- ============================================================
+-- PROACTIVE AGENTS SCHEMA (triggers + governance)
+-- ============================================================
+-- See supabase/migrations/038_proactive_agents.sql for the migration
+-- that adds these to an existing database, and the Proactive Agents
+-- spec in founders-os-docs/proactive-agents/.
+
+-- ── Triggers (declarative watches) ───────────────────────────
+create table triggers (
+  id                 uuid        primary key default uuid_generate_v4(),
+  company_id         text        not null default 'default',
+  scope              text        not null default 'org'
+                                   check (scope in ('org', 'personal')),
+  owner_id           text,
+  name               text        not null,
+  description        text,
+  condition_source   text        not null default 'data'
+                                   check (condition_source in ('data', 'connector')),
+  condition_type     text        not null
+                                   check (condition_type in (
+                                     'stalled_deal', 'overspend', 'budget_threshold',
+                                     'overdue_task', 'stuck_task', 'feed_keyword_match',
+                                     'overdue_invoice')),
+  connector          text,
+  params             jsonb       not null default '{}',
+  action_type        text        not null default 'run_playbook'
+                                   check (action_type in ('run_playbook', 'create_task', 'notify')),
+  playbook_id        uuid        references playbooks(id) on delete set null,
+  action_params      jsonb       not null default '{}',
+  cadence_hint       text        not null default 'daily'
+                                   check (cadence_hint in ('hourly', 'daily', 'weekly')),
+  digest             boolean     not null default false,
+  enabled            boolean     not null default true,
+  bound_entity_type  text,
+  bound_entity_id    uuid,
+  last_fired_at      timestamptz,
+  last_state         text,
+  created_by         text        not null default 'default',
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  deleted_at         timestamptz,
+  constraint triggers_id_company_unique unique (id, company_id)
+);
+
+create index idx_triggers_company  on triggers (company_id);
+create index idx_triggers_enabled  on triggers (company_id) where enabled = true and deleted_at is null;
+create index idx_triggers_bound    on triggers (bound_entity_type, bound_entity_id)
+                                      where bound_entity_id is not null;
+create index idx_triggers_deleted  on triggers (deleted_at) where deleted_at is not null;
+
+create trigger trg_triggers_updated
+  before update on triggers
+  for each row execute function update_updated_at();
+
+-- ── Guardrail policy (one row per company) ───────────────────
+create table guardrail_policy (
+  company_id     text        primary key default 'default',
+  tier_outcomes  jsonb       not null default '{
+                                "read": "allow",
+                                "native_create": "allow_with_log",
+                                "external_write": "hold_for_approval",
+                                "destructive": "hold_for_approval",
+                                "exfiltration": "hold_for_approval"
+                              }',
+  dry_run        boolean     not null default false,
+  paused         boolean     not null default false,
+  updated_at     timestamptz not null default now()
+);
+
+create trigger trg_guardrail_policy_updated
+  before update on guardrail_policy
+  for each row execute function update_updated_at();
+
+-- ── Pending approvals (held actions + replay guard) ──────────
+create table pending_approvals (
+  id                uuid        primary key default uuid_generate_v4(),
+  company_id        text        not null default 'default',
+  jti               text        not null,
+  action_type       text        not null,
+  action_params     jsonb       not null,
+  action_hash       text        not null,
+  tier              text        not null
+                                  check (tier in ('read','native_create','external_write',
+                                                  'destructive','exfiltration')),
+  source            text        not null,
+  summary           text        not null,
+  status            text        not null default 'pending'
+                                  check (status in ('pending','approved','rejected','executed','expired')),
+  token_expires_at  timestamptz not null,
+  approved_by       text,
+  approved_at       timestamptz,
+  delivery_channel  text,
+  delivery_ref      text,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint pending_approvals_jti_company_unique unique (company_id, jti)
+);
+
+create index idx_pending_approvals_open on pending_approvals (company_id)
+                                            where status = 'pending';
+
+create trigger trg_pending_approvals_updated
+  before update on pending_approvals
+  for each row execute function update_updated_at();
+
+-- action_clearances: single-use clearance for the headless external
+-- dispatch chokepoint (verify-clearance, T0.2). execute_action records a
+-- 'cleared' row for an external action; the runtime hook flips it to
+-- 'dispatched' exactly once before performing the connector call. See
+-- migration 042.
+create table action_clearances (
+  company_id    text        not null default 'default',
+  jti           text        not null,
+  action_hash   text        not null,
+  connector     text        not null,
+  action_type   text        not null,
+  status        text        not null default 'cleared'
+                              check (status in ('cleared','dispatched')),
+  cleared_at    timestamptz not null default now(),
+  dispatched_at timestamptz,
+  expires_at    timestamptz not null,
+  primary key (company_id, jti)
+);
+
+create index idx_action_clearances_open on action_clearances (company_id)
+                                            where status = 'cleared';
+
+-- ── Reconciliation findings (off-book external side effects) ─
+create table reconciliation_findings (
+  id                uuid        primary key default uuid_generate_v4(),
+  company_id        text        not null default 'default',
+  connector         text        not null,
+  external_ref      text        not null,
+  observed_at       timestamptz not null,
+  summary           text        not null,
+  matched_approval  uuid        references pending_approvals(id),
+  status            text        not null default 'ungoverned'
+                                  check (status in ('matched','unverified','ungoverned','acknowledged')),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint reconciliation_findings_ref_unique unique (company_id, connector, external_ref)
+);
+
+create index idx_recon_open on reconciliation_findings (company_id)
+                                where status = 'ungoverned';
+
+create trigger trg_recon_updated
+  before update on reconciliation_findings
+  for each row execute function update_updated_at();
+
+-- ── Trigger fires inbox (migration 039) ──────────────────────
+-- Durable worklist of data-condition fires for the detect tick to write
+-- and the next session to drain. One live row per trigger; a worsening
+-- re-fire upserts onto it.
+
+create table trigger_fires (
+  id              uuid        primary key default uuid_generate_v4(),
+  company_id      text        not null default 'default',
+  trigger_id      uuid        not null references triggers(id) on delete cascade,
+  condition_type  text        not null,
+  brief           text        not null,
+  fingerprint     text        not null,
+  action          jsonb       not null default '{}',
+  status          text        not null default 'pending'
+                                check (status in ('pending', 'acted', 'dismissed')),
+  acted_at        timestamptz,
+  acted_by        text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  constraint trigger_fires_one_per_trigger unique (company_id, trigger_id)
+);
+
+create index idx_trigger_fires_open    on trigger_fires (company_id) where status = 'pending';
+create index idx_trigger_fires_trigger on trigger_fires (trigger_id);
+
+create trigger trg_trigger_fires_updated
+  before update on trigger_fires
+  for each row execute function update_updated_at();
+
+
+-- ── Notifications inbox (migration 040) ──────────────────────
+-- Lightweight, free-form heads-up surface the headless agent (and any
+-- other source) posts to via notify_inbox. Distinct from trigger_fires:
+-- not FK-bound to a trigger, append-only, holds arbitrary notes rather
+-- than one-row-per-trigger fires.
+
+create table notifications (
+  id          uuid        primary key default uuid_generate_v4(),
+  company_id  text        not null default 'default',
+  title       text        not null,
+  body        text,
+  level       text        not null default 'info' check (level in ('info', 'warning')),
+  source      text,
+  created_by  text,
+  read_at     timestamptz,
+  created_at  timestamptz not null default now()
+);
+
+create index idx_notifications_unread on notifications (company_id) where read_at is null;
+
+
+-- ── Agent run lock (migration 041) ───────────────────────────
+-- Per-company run lock for the headless full run, so two overlapping
+-- `founders-os-tick run --execute` ticks do not both drive the model over
+-- the same backlog. Table-level (not pg_advisory_lock) because the Supabase
+-- pooler cannot hold a session lock across a run. TTL lets a crashed run's
+-- lock be stolen by acquire_agent_run_lock rather than wedging forever.
+
+create table agent_run_locks (
+  company_id  text        primary key default 'default',
+  run_id      text        not null,
+  locked_at   timestamptz not null default now()
+);
+
+-- acquire_agent_run_lock: true when p_run_id holds the company lock after
+-- the call. Acquires when free or the existing lock is stale (older than
+-- p_ttl_seconds); false when a fresh lock is held by a different run.
+create or replace function acquire_agent_run_lock(
+  p_company_id  text,
+  p_run_id      text,
+  p_ttl_seconds int default 3600
+) returns boolean
+set search_path = public
+as $$
+declare owns boolean;
+begin
+  insert into agent_run_locks (company_id, run_id, locked_at)
+    values (p_company_id, p_run_id, now())
+  on conflict (company_id) do update
+    set run_id = excluded.run_id, locked_at = now()
+    where agent_run_locks.locked_at < now() - make_interval(secs => p_ttl_seconds);
+
+  select exists(
+    select 1 from agent_run_locks
+    where company_id = p_company_id and run_id = p_run_id
+  ) into owns;
+  return owns;
+end;
+$$ language plpgsql;
+
+-- claim_trigger_fire: atomic conditional fire-claim. Moves last_state to
+-- p_fp only when it differs (IS DISTINCT FROM, including first-ever null);
+-- bumps last_fired_at only when matched. True when this call claimed it.
+create or replace function claim_trigger_fire(
+  p_company_id text,
+  p_trigger_id uuid,
+  p_fp         text,
+  p_matched    boolean
+) returns boolean
+set search_path = public
+as $$
+declare affected int;
+begin
+  update triggers
+    set last_state = p_fp,
+        last_fired_at = case when p_matched then now() else last_fired_at end
+    where company_id = p_company_id
+      and id = p_trigger_id
+      and last_state is distinct from p_fp;
+  get diagnostics affected = row_count;
+  return affected > 0;
+end;
+$$ language plpgsql;
+
+
+-- ============================================================
 -- RSS SCHEMA
 -- ============================================================
 
@@ -1282,6 +1547,16 @@ alter table feed_catalog   enable row level security;
 alter table feeds          enable row level security;
 alter table feed_bookmarks enable row level security;
 
+-- Proactive Agents (triggers + governance)
+alter table triggers                enable row level security;
+alter table guardrail_policy        enable row level security;
+alter table pending_approvals       enable row level security;
+alter table reconciliation_findings enable row level security;
+alter table trigger_fires           enable row level security;
+alter table notifications           enable row level security;
+alter table agent_run_locks         enable row level security;
+alter table action_clearances       enable row level security;
+
 -- Deny-all for authenticated role on every table
 create policy "deny authenticated - customers"
   on customers for all to authenticated using (false) with check (false);
@@ -1325,6 +1600,22 @@ create policy "deny authenticated - feeds"
   on feeds for all to authenticated using (false) with check (false);
 create policy "deny authenticated - feed_bookmarks"
   on feed_bookmarks for all to authenticated using (false) with check (false);
+create policy "deny authenticated - triggers"
+  on triggers for all to authenticated using (false) with check (false);
+create policy "deny authenticated - guardrail_policy"
+  on guardrail_policy for all to authenticated using (false) with check (false);
+create policy "deny authenticated - pending_approvals"
+  on pending_approvals for all to authenticated using (false) with check (false);
+create policy "deny authenticated - reconciliation_findings"
+  on reconciliation_findings for all to authenticated using (false) with check (false);
+create policy "deny authenticated - trigger_fires"
+  on trigger_fires for all to authenticated using (false) with check (false);
+create policy "deny authenticated - notifications"
+  on notifications for all to authenticated using (false) with check (false);
+create policy "deny authenticated - agent_run_locks"
+  on agent_run_locks for all to authenticated using (false) with check (false);
+create policy "deny authenticated - action_clearances"
+  on action_clearances for all to authenticated using (false) with check (false);
 
 -- ============================================================
 -- RLS AUTO-ENABLE (safety net)
@@ -1417,6 +1708,14 @@ grant select, insert, update, delete on public.tag_registry           to service
 grant select, insert, update, delete on public.task_links             to service_role, authenticated;
 grant select, insert, update, delete on public.task_notes             to service_role, authenticated;
 grant select, insert, update, delete on public.tasks                  to service_role, authenticated;
+grant select, insert, update, delete on public.triggers               to service_role, authenticated;
+grant select, insert, update, delete on public.guardrail_policy       to service_role, authenticated;
+grant select, insert, update, delete on public.pending_approvals      to service_role, authenticated;
+grant select, insert, update, delete on public.reconciliation_findings to service_role, authenticated;
+grant select, insert, update, delete on public.trigger_fires          to service_role, authenticated;
+grant select, insert, update, delete on public.notifications          to service_role, authenticated;
+grant select, insert, update, delete on public.agent_run_locks        to service_role, authenticated;
+grant select, insert, update, delete on public.action_clearances      to service_role, authenticated;
 
 -- Views (3)
 grant select on public.customer_summary                 to service_role, authenticated;
@@ -1430,6 +1729,8 @@ grant usage, select on all sequences in schema public to service_role, authentic
 grant execute on function create_financial_transaction(
   text, date, text, numeric, uuid, uuid, uuid, boolean, uuid
 ) to anon, authenticated, service_role;
+grant execute on function acquire_agent_run_lock(text, text, int) to service_role, authenticated;
+grant execute on function claim_trigger_fire(text, uuid, text, boolean) to service_role, authenticated;
 
 -- ============================================================
 -- SCHEMA VERSION MARKER
@@ -1462,11 +1763,11 @@ $$;
 
 grant select, insert, update, delete on public.founders_os_meta to service_role, authenticated;
 
--- 37 = consolidated through internal migration 037. Keep in lockstep
--- with EXPECTED_SCHEMA_VERSION in packages/core/src/schema-version.ts
--- (schema-version-lint.test.ts enforces this).
+-- 42 = adds action_clearances, the single-use external dispatch clearance (migration 042).
+-- Keep in lockstep with EXPECTED_SCHEMA_VERSION in
+-- packages/core/src/schema-version.ts (schema-version-lint.test.ts enforces this).
 insert into founders_os_meta (key, value)
-  values ('schema_version', '37')
+  values ('schema_version', '42')
   on conflict (key) do nothing;
 
 -- ============================================================

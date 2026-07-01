@@ -28,6 +28,30 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export type IdentityMode = "env" | "jwt" | "background";
 
 /**
+ * The execution principal: WHO is acting, as opposed to which identity
+ * mode configured the context. This is the lever the autonomous hard
+ * gate turns on (see proposals/autonomous-hard-gate-design.md).
+ *
+ *   - 'interactive': a human is present in the session (stdio MCP /
+ *     Cowork). May approve held actions and perform human-decision tiers.
+ *   - 'autonomous':  an unattended tick/run with no human in the loop.
+ *     May NEVER clear a hold tier; the gate refuses such actions and the
+ *     runner is given a reduced tool map.
+ *
+ * Set once in buildContext (or the runner's context builder) so no
+ * handler can forge it. An ABSENT actor is treated as 'interactive' for
+ * back-compatibility with existing call sites and tests.
+ */
+export type Actor =
+  | { kind: "interactive"; userId: string }
+  | { kind: "autonomous"; runId: string };
+
+/** True when the context's actor is the unattended autonomous principal. */
+export function isAutonomous(ctx: { actor?: Actor }): boolean {
+  return ctx.actor?.kind === "autonomous";
+}
+
+/**
  * Embedding provider configuration. Self-hosted builds this from
  * EMBEDDING_* env vars at startup; hosted builds it per-tenant
  * from a config store. See docs/multi-deployment-architecture.md.
@@ -50,6 +74,26 @@ export type EmbeddingConfig = {
     maxCalls: number;
     windowMs: number;
   };
+};
+
+/**
+ * Agent-model configuration for the headless runner (`founders-os-tick
+ * run --execute`, Phase 2b). A sibling of EmbeddingConfig: self-hosted
+ * builds it from FOUNDERSOS_AGENT_* env vars; hosted would resolve it
+ * per-tenant. Read ONLY inside buildAutonomousContext via
+ * readAgentModelConfigFromEnv() — interactive sessions never need a model.
+ *
+ * Provider-specific keys are optional; only the active provider's key
+ * needs to be set:
+ *   - anthropic: requires anthropicApiKey (ANTHROPIC_API_KEY)
+ *   - openai:    reuses openaiApiKey (OPENAI_API_KEY), shared with embeddings
+ */
+export type AgentModelConfig = {
+  provider: "anthropic" | "openai";
+  model: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  maxTokens: number;
 };
 
 /**
@@ -86,10 +130,23 @@ export type ToolContext = {
    */
   isSoloMode: boolean;
   /**
+   * The execution principal. Optional for back-compatibility: an absent
+   * actor is treated as 'interactive' (see Actor and isAutonomous). The
+   * autonomous hard gate keys off ctx.actor.kind === 'autonomous'.
+   */
+  actor?: Actor;
+  /**
    * Embedding configuration for memory + similarity-search tools.
    * Self-hosted reads this once at startup from EMBEDDING_* env vars;
    * hosted resolves it per-tenant from a config store. See
    * docs/multi-deployment-architecture.md.
    */
   embedding: EmbeddingConfig;
+  /**
+   * Agent-model configuration for the headless runner. Present ONLY for
+   * the autonomous principal (built in buildAutonomousContext); absent
+   * for interactive sessions and when no agent model is configured. The
+   * runner treats an absent config as "full run unavailable".
+   */
+  agentModel?: AgentModelConfig;
 };

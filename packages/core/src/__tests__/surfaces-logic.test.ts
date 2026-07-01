@@ -406,3 +406,168 @@ describe("get_entity_card — linked transactions merge", () => {
     expect(mergeLinkedTx([], [])).toHaveLength(0);
   });
 });
+
+// ── get_project_history: visibility filter, kind filter, timeline markdown ────
+// Mirrors the logic in surfaces/index.ts get_project_history handler.
+
+describe("get_project_history — scope → visibility filter", () => {
+  // Mirrors the handler's scope branch:
+  //   org      → .eq("user_id", "org")
+  //   personal → .eq("user_id", ctx.userId)
+  //   both     → .or(`user_id.eq.${ctx.userId},user_id.eq.org`)
+  const visibility = (scope: "org" | "personal" | "both", userId: string) => {
+    if (scope === "org") return { kind: "eq", value: "org" };
+    if (scope === "personal") return { kind: "eq", value: userId };
+    return { kind: "or", value: `user_id.eq.${userId},user_id.eq.org` };
+  };
+
+  it("TC-SUR35: org scope restricts to org-sentinel rows", () => {
+    expect(visibility("org", "alice")).toEqual({ kind: "eq", value: "org" });
+  });
+
+  it("TC-SUR36: personal scope restricts to the caller's user_id", () => {
+    expect(visibility("personal", "alice")).toEqual({ kind: "eq", value: "alice" });
+  });
+
+  it("TC-SUR37: both scope matches the caller AND org rows", () => {
+    const f = visibility("both", "alice");
+    expect(f.kind).toBe("or");
+    expect(f.value).toContain("user_id.eq.alice");
+    expect(f.value).toContain("user_id.eq.org");
+  });
+});
+
+describe("get_project_history — kind filter", () => {
+  // Mirrors: if (kind !== "all") q = q.eq("metadata->>kind", kind);
+  const appliesKindFilter = (kind: string) => kind !== "all";
+
+  it("TC-SUR38: default 'checkpoint' applies a metadata.kind filter", () => {
+    expect(appliesKindFilter("checkpoint")).toBe(true);
+  });
+
+  it("TC-SUR39: 'all' disables the kind filter", () => {
+    expect(appliesKindFilter("all")).toBe(false);
+  });
+
+  it("TC-SUR40: an arbitrary kind still applies the filter", () => {
+    expect(appliesKindFilter("decision")).toBe(true);
+  });
+});
+
+describe("get_project_history — timeline markdown", () => {
+  // Mirrors the handler's excerpt() and markdown table builder.
+  const excerpt = (text: string): string => {
+    const firstLine = text.split("\n")[0].trim();
+    const clipped = firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine;
+    return clipped.replace(/\|/g, "\\|");
+  };
+
+  const buildMarkdown = (
+    entries: Array<{ scope: string; content: string; created_at: string }>,
+    kind: string,
+    project: string
+  ) =>
+    entries.length
+      ? `| Date | Scope | Entry |\n|------|-------|-------|\n` +
+        entries
+          .map((e) => `| ${e.created_at.slice(0, 10)} | ${e.scope} | ${excerpt(e.content)} |`)
+          .join("\n")
+      : `No ${kind === "all" ? "" : kind + " "}history found for project "${project}".`;
+
+  it("TC-SUR41: excerpt keeps only the first line", () => {
+    expect(excerpt("Headline here\nbody detail\nmore")).toBe("Headline here");
+  });
+
+  it("TC-SUR42: excerpt clips long first lines to 120 chars with ellipsis", () => {
+    const long = "x".repeat(200);
+    const out = excerpt(long);
+    expect(out.length).toBe(120);
+    expect(out.endsWith("...")).toBe(true);
+  });
+
+  it("TC-SUR43: excerpt escapes pipe characters so the table is not broken", () => {
+    expect(excerpt("a | b | c")).toBe("a \\| b \\| c");
+  });
+
+  it("TC-SUR44: markdown renders one row per entry with a sliced date", () => {
+    const md = buildMarkdown(
+      [
+        { scope: "org", content: "First checkpoint", created_at: "2026-06-15T12:00:00Z" },
+        { scope: "personal", content: "Second checkpoint", created_at: "2026-06-16T09:30:00Z" },
+      ],
+      "checkpoint",
+      "founders-os"
+    );
+    expect(md).toContain("| 2026-06-15 | org | First checkpoint |");
+    expect(md).toContain("| 2026-06-16 | personal | Second checkpoint |");
+  });
+
+  it("TC-SUR45: empty result yields a kind-aware not-found message", () => {
+    expect(buildMarkdown([], "checkpoint", "founders-os")).toBe(
+      'No checkpoint history found for project "founders-os".'
+    );
+    expect(buildMarkdown([], "all", "founders-os")).toBe(
+      'No history found for project "founders-os".'
+    );
+  });
+});
+
+// ── checkpoint: handoff-doc slug + procedure shape ───────────────────────────
+// Mirrors handoffDocHint() and the store_with block in surfaces/index.ts.
+
+describe("checkpoint — handoff doc hint", () => {
+  const handoffDocHint = (project: string | undefined, today: string): string => {
+    const slug = project
+      ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+      : "session";
+    return `docs/${slug}-session-handoff-${today}.md`;
+  };
+
+  it("TC-SUR46: builds a slugified path from the project tag", () => {
+    expect(handoffDocHint("marching-maestro", "2026-06-17")).toBe(
+      "docs/marching-maestro-session-handoff-2026-06-17.md"
+    );
+  });
+
+  it("TC-SUR47: normalizes casing and spaces to a clean slug", () => {
+    expect(handoffDocHint("Marching Maestro", "2026-06-17")).toBe(
+      "docs/marching-maestro-session-handoff-2026-06-17.md"
+    );
+  });
+
+  it("TC-SUR48: falls back to 'session' when no project is given", () => {
+    expect(handoffDocHint(undefined, "2026-06-17")).toBe(
+      "docs/session-session-handoff-2026-06-17.md"
+    );
+  });
+
+  it("TC-SUR49: strips leading/trailing separators from messy tags", () => {
+    expect(handoffDocHint("__TalkDoc__", "2026-06-17")).toBe(
+      "docs/talkdoc-session-handoff-2026-06-17.md"
+    );
+  });
+});
+
+describe("checkpoint — store_with contract", () => {
+  // The store_with block must always direct an append-only checkpoint write.
+  const storeParams = (scope: "org" | "personal", project?: string) => ({
+    scope,
+    project: project ?? "<ask the user>",
+    kind: "checkpoint",
+    resolution: "confirm",
+  });
+
+  it("TC-SUR50: checkpoints store with kind=checkpoint and resolution=confirm", () => {
+    const p = storeParams("org", "founders-os");
+    expect(p.kind).toBe("checkpoint");
+    expect(p.resolution).toBe("confirm");
+  });
+
+  it("TC-SUR51: missing project surfaces an ask-the-user placeholder", () => {
+    expect(storeParams("org").project).toBe("<ask the user>");
+  });
+
+  it("TC-SUR52: scope passes through (defaulting handled by the handler)", () => {
+    expect(storeParams("personal", "x").scope).toBe("personal");
+  });
+});

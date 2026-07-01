@@ -33,6 +33,7 @@ import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
+import { cascadeTriggersForEntity } from "../triggers/cleanup.js";
 import type { ToolContext } from "../../types/context.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
@@ -453,7 +454,7 @@ export const playbookTools: ToolMap = {
           "For external_action: the action to perform, e.g. 'create_repo', 'create_channel'."
         ),
       params: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "For external_action: connector-specific parameters. Supports {{placeholders}}. " +
@@ -892,6 +893,11 @@ export const playbookTools: ToolMap = {
         })
         .eq("id", runId);
 
+      // Clean up any run-scoped watchers this run installed (triggers bound
+      // to the run itself). Customer/project-bound watchers persist; they are
+      // cleaned up when their own entity is archived.
+      await cascadeTriggersForEntity(ctx, "playbook_run", runId);
+
       const actionMsg =
         externalActions.length > 0
           ? `Execute the ${externalActions.length} item(s) in external_actions using connected MCP tools. ` +
@@ -1036,7 +1042,7 @@ export const playbookTools: ToolMap = {
       priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       connector: z.string().optional(),
       action: z.string().optional(),
-      params: z.record(z.unknown()).optional().describe("Updated connector params."),
+      params: z.record(z.string(), z.unknown()).optional().describe("Updated connector params."),
       fallback_task: z.string().optional().describe("Updated fallback task title."),
     }),
     handler: async (ctx: ToolContext, rawParams: {

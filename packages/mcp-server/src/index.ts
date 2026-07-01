@@ -42,6 +42,9 @@ import {
   registerTagTools,
   registerSurfaceTools,
   registerPlaybookTools,
+  registerGovernanceTools,
+  registerTriggerTools,
+  registerNotificationTools,
   registerProjectTools,
   registerRestoreTools,
 } from "@ourthinktank/founders-os-core";
@@ -178,6 +181,15 @@ Build playbooks with create_playbook + add_playbook_step. All step text supports
 SURFACES: Call get_session_start at session open for full orientation across all
 domains. Use get_entity_card for a complete picture of any customer, contact, or
 transaction. get_weekly_retro for completed-task reviews. get_stuck_list for stuck work.
+get_project_history for a project's chronological checkpoint timeline.
+
+CHECKPOINT: When the user says "checkpoint", "let's checkpoint", or "wrap up this
+session", call the checkpoint tool (the end-of-session bookend to get_session_start).
+It returns an ordered procedure to execute: summarize the session, capture repo
+changes as commit links, store the record via memory_summarize_and_store with
+kind="checkpoint" and resolution="confirm", propose task candidates, and write a
+handoff doc into the project repo. Follow the returned steps; review the
+previous_checkpoint it returns to carry forward unfinished OPEN/NEXT items.
 
 MEMORY: Recalled memories can go stale as the world changes, so a stored memory
 may conflict with what you now observe. When that happens, do not blindly trust
@@ -215,6 +227,9 @@ registerRSSTools(server, ctx);
 registerSurfaceTools(server, ctx);
 
 registerPlaybookTools(server, ctx);
+registerGovernanceTools(server, ctx);
+registerTriggerTools(server, ctx);
+registerNotificationTools(server, ctx);
 registerProjectTools(server, ctx);
 registerRestoreTools(server, ctx);
 

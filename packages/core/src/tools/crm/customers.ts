@@ -5,6 +5,7 @@ import { conflict } from "../conflict.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import { tagFilterParams, resolveTagList } from "../filters.js";
+import { cascadeTriggersForEntity } from "../triggers/cleanup.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
 
@@ -536,6 +537,8 @@ export const customerTools = {
             .select()
             .single();
           if (error) throw new Error(`Failed to archive customer: ${error.message}`);
+          // An inactive customer should not keep firing its watchers.
+          await cascadeTriggersForEntity(ctx, "customer", customer_id);
           return data;
         },
         deleteFn: async () => {
@@ -577,6 +580,10 @@ export const customerTools = {
           if (interactionsErr) {
             throw new Error(`Customer deleted but interaction cascade failed: ${interactionsErr.message}`);
           }
+
+          // Cascade: soft-delete watchers bound to this customer so a
+          // removed customer leaves no enabled trigger behind.
+          await cascadeTriggersForEntity(ctx, "customer", customer_id);
 
           return data;
         },

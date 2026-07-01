@@ -48,7 +48,7 @@ type LaunchMethod = "npx" | "global" | "local" | "unknown";
 
 // Classify how this process was launched, from the module path plus npm's
 // own env vars. NOTE: the literal version spec from the MCP config
-// (`@latest` vs `@0.14.1`) is consumed by npx before launch and is NOT
+// (`@latest` vs `@1.2.0`) is consumed by npx before launch and is NOT
 // observable here, so we report the launch *method*, which is enough to
 // give the user the correct upgrade step.
 function detectLaunchMethod(modulePath: string): LaunchMethod {

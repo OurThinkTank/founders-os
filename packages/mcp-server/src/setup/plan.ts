@@ -1,0 +1,110 @@
+// ============================================================
+// Founders OS — init plan (pure)
+// ============================================================
+// buildInitPlan turns a resolved config into a declarative plan: the exact
+// files to write (path + content + mode) and the register commands to run.
+// It has no side effects, so a test can assert the whole plan against a tmp
+// HOME without touching the real scheduler. init.ts executes the plan.
+// ============================================================
+
+import {
+  buildLaunchdPlist,
+  buildSystemdService,
+  buildSystemdTimer,
+  buildCronLine,
+  buildEnvFile,
+  wrapperSh,
+  wrapperCmd,
+  type Cadence,
+} from "./generators.js";
+import type { ManagedPaths, OsKind, Scheduler, UnitPaths } from "./paths.js";
+import { buildRegisterCommands, type Command } from "./registrar.js";
+
+export interface InitConfig {
+  os: OsKind;
+  scheduler: Scheduler;
+  cadence: Cadence;
+  dailyHour: number;
+  execute: boolean; // wire `run --execute` (writes model config) vs hold-only
+  tickBin: string; // FOUNDERSOS_TICK_BIN value the wrapper uses
+  creds: Record<string, string>; // SUPABASE_*, FOUNDERS_OS_* the wrapper needs
+  paths: ManagedPaths;
+  units: UnitPaths;
+}
+
+export interface PlannedFile {
+  path: string;
+  content: string;
+  mode: number;
+}
+
+export interface InitPlan {
+  files: PlannedFile[];
+  register: Command[];
+  os: OsKind;
+  scheduler: Scheduler;
+}
+
+// Sensible model default so an --execute opt-in never leaves the model unset
+// (unset => SDK default Opus 4.8, the priciest). See S2.2.
+const DEFAULT_AGENT_PROVIDER = "anthropic";
+const DEFAULT_AGENT_MODEL = "claude-sonnet-5";
+
+export function buildInitPlan(cfg: InitConfig): InitPlan {
+  // The env the wrapper sources: creds + how to invoke the tick CLI, plus the
+  // model config only when full run is opted into.
+  const env: Record<string, string> = { ...cfg.creds, FOUNDERSOS_TICK_BIN: cfg.tickBin };
+  if (cfg.execute) {
+    if (!env.FOUNDERSOS_AGENT_PROVIDER) env.FOUNDERSOS_AGENT_PROVIDER = DEFAULT_AGENT_PROVIDER;
+    if (!env.FOUNDERSOS_AGENT_MODEL) env.FOUNDERSOS_AGENT_MODEL = DEFAULT_AGENT_MODEL;
+  }
+  const envFile: PlannedFile = { path: cfg.paths.envFile, content: buildEnvFile(env), mode: 0o600 };
+
+  // The wrapper's run posture follows the opt-in: hold-only stages, execute
+  // runs the full-run runner. The schedule points at the wrapper PATH, so an
+  // upgrade later only rewrites this file's body — no re-registration.
+  const mode = cfg.execute ? "execute" : "hold-only";
+
+  // ── Windows: the .cmd wrapper (reads the same env file) + a schtasks task ──
+  if (cfg.os === "windows") {
+    const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperWin, content: wrapperCmd(mode), mode: 0o644 }];
+    const register = buildRegisterCommands({
+      os: cfg.os,
+      scheduler: "taskscheduler",
+      units: cfg.units,
+      cronLine: "",
+      wrapperWin: cfg.paths.wrapperWin,
+      cadence: cfg.cadence,
+      dailyHour: cfg.dailyHour,
+    });
+    return { files, register, os: cfg.os, scheduler: "taskscheduler" };
+  }
+
+  // ── macOS / Linux: the .sh wrapper + the OS unit ──
+  const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperUnix, content: wrapperSh(mode), mode: 0o755 }];
+
+  const schedOpts = {
+    wrapperPathUnix: cfg.paths.wrapperUnix,
+    logPath: cfg.paths.logFile,
+    cadence: cfg.cadence,
+    dailyHour: cfg.dailyHour,
+  };
+
+  if (cfg.scheduler === "launchd") {
+    files.push({ path: cfg.units.launchdPlist, content: buildLaunchdPlist(schedOpts), mode: 0o644 });
+  } else if (cfg.scheduler === "systemd") {
+    files.push({ path: cfg.units.systemdService, content: buildSystemdService(schedOpts), mode: 0o644 });
+    files.push({ path: cfg.units.systemdTimer, content: buildSystemdTimer(schedOpts), mode: 0o644 });
+  }
+  // cron writes no unit file; the crontab line is added by the register step.
+
+  const cronLine = buildCronLine(schedOpts).trimEnd();
+  const register = buildRegisterCommands({
+    os: cfg.os,
+    scheduler: cfg.scheduler,
+    units: cfg.units,
+    cronLine,
+  });
+
+  return { files, register, os: cfg.os, scheduler: cfg.scheduler };
+}
