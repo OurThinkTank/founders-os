@@ -18,6 +18,7 @@ import { detectOs, defaultScheduler, managedPaths, unitPaths } from "./paths.js"
 import { buildInitPlan, type InitConfig } from "./plan.js";
 import { runCommands } from "./registrar.js";
 import { makePrompter } from "./prompt.js";
+import { checkTickBinResolves, localSelfInvocation } from "./resolve.js";
 import type { Cadence } from "./generators.js";
 
 const EXIT_OK = 0;
@@ -84,7 +85,32 @@ export async function runInit(a: InitArgs): Promise<number> {
     // ── Scheduler + how the wrapper invokes the CLI ──
     // --cron only applies to unix; Windows always uses Task Scheduler.
     const scheduler = a.cron && os !== "windows" ? "cron" : defaultScheduler(os);
-    const tickBin = a.tickBin ?? DEFAULT_TICK_BIN;
+
+    // Resolve how the scheduled wrapper invokes the tick CLI. The published
+    // npx form is the default (the expected case). Preflight it so a founder
+    // does not discover a "command not found" at 3am; self-heal to the current
+    // local build when the published command is not reachable (dev / global).
+    let tickBin = a.tickBin ?? DEFAULT_TICK_BIN;
+    out("Checking the scheduled command resolves (this can take a moment)...");
+    let check = checkTickBinResolves(tickBin);
+    if (!check.ok && !a.tickBin) {
+      const local = localSelfInvocation();
+      if (local) {
+        const localCheck = checkTickBinResolves(local);
+        if (localCheck.ok) {
+          tickBin = local;
+          check = localCheck;
+          out(`  The published command wasn't reachable, so I pointed the schedule at this build: ${local}`);
+        }
+      }
+    }
+    if (check.ok) {
+      out(`✓ Command resolves: ${check.detail}`);
+    } else {
+      err(`  ⚠ The scheduled command "${tickBin}" didn't resolve here (${check.detail}).`);
+      err("    The hourly job may fail. Fix: install globally (npm i -g @ourthinktank/founders-os),");
+      err("    or re-run with --tick-bin=\"node /abs/path/to/dist/tick.js\". Then check `founders-os-tick doctor`.");
+    }
 
     const cfg: InitConfig = { os, scheduler, cadence, dailyHour, execute: false, tickBin, creds, paths, units };
     const plan = buildInitPlan(cfg);

@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { buildContext, governanceTools } from "@ourthinktank/founders-os-core";
 import { detectOs, defaultScheduler, managedPaths, type Scheduler } from "./paths.js";
 import { scheduleStatus } from "./registrar.js";
+import { checkTickBinResolves } from "./resolve.js";
 
 type PolicyShape = { tier_outcomes: Record<string, string>; paused?: boolean };
 const getPolicy = governanceTools.get_policy.handler as unknown as (ctx: unknown, args: unknown) => Promise<{ policy: PolicyShape }>;
@@ -108,12 +109,29 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
   const lastRun = parseLastRun(readFileSafe(paths.logFile));
   const envText = readFileSafe(paths.envFile);
   const model = readEnvValue(envText, "FOUNDERSOS_AGENT_MODEL");
+  const tickBin = readEnvValue(envText, "FOUNDERSOS_TICK_BIN");
   const connectorConfigured = existsSync(paths.connectorsFile);
   const autosend = await readAutosendState();
+
+  // CLI reachability: a successful last run already proves the scheduled bin
+  // resolves, so only probe (which can be slow for the npx form) when there
+  // has never been a run.
+  let cli: { reachable: boolean | null; detail: string };
+  if (lastRun) {
+    cli = lastRun.ok
+      ? { reachable: true, detail: "last scheduled run succeeded" }
+      : { reachable: null, detail: "last run failed — see Last run above" };
+  } else if (tickBin) {
+    const c = checkTickBinResolves(tickBin);
+    cli = { reachable: c.ok, detail: c.detail };
+  } else {
+    cli = { reachable: null, detail: "not configured yet (run init)" };
+  }
 
   const report = {
     schedule: { registered: sched.registered, scheduler, detail: sched.detail },
     last_run: lastRun,
+    cli,
     autosend,
     model: model ?? null,
     connector_configured: connectorConfigured,
@@ -125,7 +143,7 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
     return EXIT_OK;
   }
 
-  const healthy = sched.registered && (lastRun ? lastRun.ok : true);
+  const healthy = sched.registered && (lastRun ? lastRun.ok : true) && cli.reachable !== false;
   process.stdout.write(`founders-os-tick doctor — ${healthy ? "healthy" : "needs attention"}\n`);
   process.stdout.write(`  Schedule:   ${sched.registered ? `registered (${scheduler})` : "NOT registered — run: founders-os-tick init"}\n`);
   if (lastRun) {
@@ -133,6 +151,8 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
   } else {
     process.stdout.write(`  Last run:   never (waiting for the first scheduled tick)\n`);
   }
+  const cliLabel = cli.reachable === true ? "reachable" : cli.reachable === false ? "NOT reachable — the hourly job may fail" : "unverified";
+  process.stdout.write(`  CLI:        ${cliLabel} (${cli.detail})\n`);
   // Auto-send from the live policy tier, when we could read it.
   if (!autosend.known) {
     process.stdout.write(`  Auto-send:  unknown (couldn't read the policy — check your credentials)\n`);
