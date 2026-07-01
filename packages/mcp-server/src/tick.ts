@@ -47,6 +47,8 @@ import {
   loadConnectorPolicy,
   defaultRunQuery,
 } from "./agent-runner.js";
+import { runInit } from "./setup/init.js";
+import { runDoctor } from "./setup/doctor.js";
 
 // Exit codes: 0 clean, 1 config/runtime failure, 2 usage error.
 const EXIT_OK = 0;
@@ -61,17 +63,33 @@ interface Args {
   holdOnly: boolean;
   execute: boolean;
   conditions?: string[];
+  // init options
+  yes: boolean;
+  cron: boolean;
+  cadence?: "hourly" | "daily";
+  hour?: number;
+  tickBin?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false, execute: false };
+  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false, execute: false, yes: false, cron: false };
   for (const a of argv.slice(1)) {
     if (a === "--json") args.json = true;
     else if (a === "--dry") args.dry = true;
     else if (a === "--quiet") args.quiet = true;
     else if (a === "--hold-only") args.holdOnly = true;
     else if (a === "--execute") args.execute = true;
-    else if (a.startsWith("--conditions=")) {
+    else if (a === "--yes" || a === "-y") args.yes = true;
+    else if (a === "--cron") args.cron = true;
+    else if (a === "--daily") args.cadence = "daily";
+    else if (a.startsWith("--cadence=")) {
+      const c = a.slice("--cadence=".length);
+      if (c === "hourly" || c === "daily") args.cadence = c;
+    } else if (a.startsWith("--hour=")) {
+      args.hour = Number(a.slice("--hour=".length));
+    } else if (a.startsWith("--tick-bin=")) {
+      args.tickBin = a.slice("--tick-bin=".length);
+    } else if (a.startsWith("--conditions=")) {
       args.conditions = a.slice("--conditions=".length).split(",").map((s) => s.trim()).filter(Boolean);
     }
   }
@@ -95,11 +113,20 @@ async function readVersion(): Promise<string> {
 const USAGE = `founders-os-tick — local scheduler for Founders OS triggers
 
 Usage:
+  founders-os-tick init [options]        Guided setup: schedule the overnight check (no files to edit)
+  founders-os-tick doctor [--json]       Show status: schedule, last run, model, connector
   founders-os-tick detect [options]      Run data-condition detection, write the inbox
   founders-os-tick run --hold-only [opts] Drain the inbox: stage every fire for human review, perform nothing
   founders-os-tick run --execute [opts]   Model-driven full run (detect + withhold + record + reconcile)
   founders-os-tick --version
   founders-os-tick --help
+
+init options:
+  --yes / -y         Non-interactive: accept defaults (hourly, OS default scheduler)
+  --cadence=hourly|daily  Check cadence (default hourly). --daily is shorthand for daily.
+  --hour=N           Hour of day for a daily cadence (default 6)
+  --cron             Use cron instead of the OS default (launchd on macOS, systemd on Linux)
+  --tick-bin=CMD     How the wrapper invokes the CLI (default: an npx form)
 
 detect options:
   --conditions=a,b   Restrict to these condition_types (default: all enabled)
@@ -435,6 +462,12 @@ async function main(): Promise<number> {
   if (args.command === "" || args.command === "--help" || args.command === "-h") {
     process.stdout.write(USAGE + "\n");
     return args.command === "" ? EXIT_USAGE : EXIT_OK;
+  }
+  if (args.command === "init") {
+    return runInit({ yes: args.yes, cadence: args.cadence, hour: args.hour, cron: args.cron, tickBin: args.tickBin });
+  }
+  if (args.command === "doctor") {
+    return runDoctor({ json: args.json });
   }
   if (args.command === "detect") {
     return runDetect(args);
