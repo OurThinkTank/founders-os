@@ -6,9 +6,14 @@
 // env file + wrapper + scheduler unit into ONE config dir, registers the
 // schedule with the OS, and runs a first detect so the user sees it work.
 //
-// First run wires the SAFE posture only: the scheduled wrapper runs
+// First run wires the SAFE posture by default: the scheduled wrapper runs
 // `detect` then `run --hold-only`, so it prepares and stages, never sends.
-// Turning on unattended sending is a separate, later step (S3.6 autosend).
+// Turning on unattended sending is a separate, later step (autosend).
+//
+// `init --execute` is the explicit opt-in to full-run auto-dispatch: it
+// preflights the Agent SDK + API key, writes the model env, and wires the
+// wrapper to `run --execute`. Hold-only stays the default so nothing sends
+// unless a founder deliberately asks for it.
 // ============================================================
 
 import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
@@ -19,12 +24,18 @@ import { buildInitPlan, type InitConfig } from "./plan.js";
 import { runCommands } from "./registrar.js";
 import { makePrompter } from "./prompt.js";
 import { checkTickBinResolves, localSelfInvocation } from "./resolve.js";
+import { preflightExecute } from "./sdk.js";
+import { RUNGS } from "./posture.js";
 import type { Cadence } from "./generators.js";
 
 const EXIT_OK = 0;
 const EXIT_FAIL = 1;
 
 const CRED_KEYS = ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "FOUNDERS_OS_COMPANY_ID", "FOUNDERS_OS_USER_ID", "FOUNDERS_OS_TIMEZONE"] as const;
+// Model env carried into the wrapper's env file when --execute is on, so the
+// scheduled (profile-less) job can reach the provider. The provider's API key
+// is added dynamically from the resolved apiKeyVar.
+const EXECUTE_ENV_KEYS = ["FOUNDERSOS_AGENT_PROVIDER", "FOUNDERSOS_AGENT_MODEL"] as const;
 const DEFAULT_TICK_BIN = "npx -y -p @ourthinktank/founders-os@latest founders-os-tick";
 
 export interface InitArgs {
@@ -33,6 +44,7 @@ export interface InitArgs {
   hour?: number; // --hour=N for daily
   cron?: boolean; // force cron instead of the OS default
   tickBin?: string; // --tick-bin override
+  execute?: boolean; // --execute: opt into full-run auto-dispatch
 }
 
 function out(s: string): void {
@@ -112,7 +124,27 @@ export async function runInit(a: InitArgs): Promise<number> {
       err("    or re-run with --tick-bin=\"node /abs/path/to/dist/tick.js\". Then check `founders-os-tick doctor`.");
     }
 
-    const cfg: InitConfig = { os, scheduler, cadence, dailyHour, execute: false, tickBin, creds, paths, units };
+    // ── Full-run opt-in (--execute): preflight the Agent SDK + API key and
+    // carry the model config into the wrapper's env file. Hold-only otherwise. ──
+    const execute = a.execute === true;
+    if (execute) {
+      out("\nSetting up full-run auto-dispatch (run --execute).");
+      const check = preflightExecute(out);
+      // The scheduled job doesn't inherit your shell, so any model config it
+      // needs must live in the env file. Carry over what's set; plan.ts fills
+      // provider/model defaults when they're absent.
+      for (const k of EXECUTE_ENV_KEYS) {
+        const v = process.env[k];
+        if (v) creds[k] = v;
+      }
+      const apiKey = process.env[check.apiKeyVar];
+      if (apiKey) creds[check.apiKeyVar] = apiKey;
+      if (!check.ready) {
+        out("  Full-run scheduled anyway; it won't dispatch until the above is resolved. Check `founders-os-tick doctor`.");
+      }
+    }
+
+    const cfg: InitConfig = { os, scheduler, cadence, dailyHour, execute, tickBin, creds, paths, units };
     const plan = buildInitPlan(cfg);
 
     // ── Write everything into one config dir ──
@@ -149,8 +181,15 @@ export async function runInit(a: InitArgs): Promise<number> {
       // Non-fatal: the schedule is registered; the next tick will try again.
     }
 
-    out("\nYou're set. I'll check on your cadence and prepare anything that needs you.");
-    out('Nothing gets sent on its own. Run "founders-os-tick doctor" anytime to see status.');
+    // Close by naming the rung just provisioned, in the same words `doctor`
+    // uses, plus the next step. Execute schedule = "Triaging"; else "Preparing".
+    const rung = execute ? RUNGS[1] : RUNGS[0];
+    out(`\nYou're set. You're now at "${rung.title}": ${rung.blurb}`);
+    if (execute) {
+      out("To let routine messages send on their own, next connect a channel and turn on auto-send:");
+      out("  founders-os-tick connect slack   then   founders-os-tick autosend slack --on");
+    }
+    out('Run "founders-os-tick doctor" anytime to see where you are and what is next.');
     return EXIT_OK;
   } finally {
     prompter.close();

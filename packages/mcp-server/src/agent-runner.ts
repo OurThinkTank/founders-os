@@ -141,17 +141,18 @@ const SDK_PKG: string = "@anthropic-ai/claude-agent-sdk";
 export const defaultRunQuery: RunnerQuery = async function* (
   opts: RunAgentTickOptions
 ): AsyncIterable<RunnerMessage> {
-  // The SDK is an OPTIONAL peer dependency (the runner is opt-in), so import
-  // it lazily and explain how to add it if it is missing.
+  // The SDK ships as a dependency, but import it lazily (via a non-literal
+  // specifier) so hold-only runs never load it and tsc doesn't resolve it. A
+  // failure here means a broken/partial install, not a missing optional dep.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sdk: any;
   try {
     sdk = await import(SDK_PKG);
   } catch {
     throw new Error(
-      "The Agent SDK runner needs @anthropic-ai/claude-agent-sdk (an optional dependency). " +
-        "Install it to enable `run --execute`: npm install @anthropic-ai/claude-agent-sdk. " +
-        "Or set FOUNDERSOS_TICK_RUNNER=inprocess for the fallback runner."
+      "The Agent SDK (@anthropic-ai/claude-agent-sdk) ships with Founders OS but failed to load; the install looks incomplete. " +
+        "Reinstall @ourthinktank/founders-os (e.g. npm i -g @ourthinktank/founders-os), " +
+        "or set FOUNDERSOS_TICK_RUNNER=inprocess for the fallback runner."
     );
   }
   const stream = sdk.query({

@@ -138,6 +138,49 @@ export const WRAPPER_SH =
 export const WRAPPER_CMD =
   "@echo off\nREM ============================================================\nREM Founders OS - tick wrapper (detect + run --hold-only)\nREM ============================================================\nREM One scheduled run = the check then the drain:\nREM   1. founders-os-tick detect           fills the trigger_fires inbox\nREM   2. founders-os-tick run --hold-only   stages every fire for human review\nREM They run serially. Nothing is performed - staged items wait for a human.\nREM Point Task Scheduler at THIS .cmd so one task does both halves.\nREM\nREM Credentials load from the env file (default\nREM %USERPROFILE%\\.config\\founders-os\\foundersos-tick.env), same as the .sh\nREM wrapper; override the path with FOUNDERSOS_TICK_ENV. FOUNDERSOS_TICK_BIN\nREM sets how the CLI is invoked (default \"founders-os-tick\"; use an npx form\nREM if you did not install globally).\nREM ============================================================\n\nset \"ENV_FILE=%FOUNDERSOS_TICK_ENV%\"\nif \"%ENV_FILE%\"==\"\" set \"ENV_FILE=%USERPROFILE%\\.config\\founders-os\\foundersos-tick.env\"\nif exist \"%ENV_FILE%\" (\n  for /f \"usebackq eol=# tokens=1,* delims==\" %%a in (\"%ENV_FILE%\") do set \"%%a=%%~b\"\n)\n\nif \"%FOUNDERSOS_TICK_BIN%\"==\"\" (set \"TICK=founders-os-tick\") else (set \"TICK=%FOUNDERSOS_TICK_BIN%\")\n\nset \"LOG_DIR=%USERPROFILE%\\.local\\state\"\nif not exist \"%LOG_DIR%\" mkdir \"%LOG_DIR%\" 2>nul\nset \"LOG=%LOG_DIR%\\foundersos-tick.log\"\n\necho %date% %time% [tick-wrapper] start>> \"%LOG%\"\n\ncall %TICK% detect --json>> \"%LOG%\" 2>&1\nset \"RC_DETECT=%ERRORLEVEL%\"\n\ncall %TICK% run --hold-only --json>> \"%LOG%\" 2>&1\nset \"RC_RUN=%ERRORLEVEL%\"\n\necho %date% %time% [tick-wrapper] done detect=%RC_DETECT% run=%RC_RUN%>> \"%LOG%\"\n\nif not \"%RC_DETECT%\"==\"0\" exit /b 1\nif not \"%RC_RUN%\"==\"0\" exit /b 1\nexit /b 0\n";
 
+// ── Run posture: hold-only (default) vs full-run (execute) ──
+// The scheduled wrapper runs `run --hold-only` by default (stages, never
+// sends). The execute variant runs `run --execute` (the Agent SDK runner,
+// which acts within the gate; low-risk external sends may post, sensitive
+// ones still stage). The execute body is DERIVED from the parity-guarded
+// hold-only body so the two can never drift: the run posture is swapped and
+// the two descriptions that only make sense for staging are corrected.
+// Everything operational (env sourcing, PATH augmentation, argv split,
+// logging) is identical, so a wrapper upgrade is a one-word change.
+export type RunMode = "hold-only" | "execute";
+
+export function wrapperSh(mode: RunMode): string {
+  if (mode === "hold-only") return WRAPPER_SH;
+  return WRAPPER_SH.split("run --hold-only")
+    .join("run --execute")
+    .replace(
+      "#   2. founders-os-tick run --execute  stages every fire for human review",
+      "#   2. founders-os-tick run --execute  a model reads each fire and acts in the gate"
+    )
+    .replace(
+      "# They run serially (detect finishes before run starts). Nothing is ever\n# performed — staged items wait in the approval queue for a human.",
+      "# They run serially (detect finishes before run starts). A model reads each\n# fire and acts within the gate: low-risk external sends may post (recorded),\n# anything sensitive still stages for a human."
+    )
+    .replace(
+      "# 2. Drain — stage whatever is pending. Runs even if detect failed, since the\n#    runner stages any inbox items that are already waiting.",
+      "# 2. Drain: a model works each inbox fire within the gate. Runs even if\n#    detect failed, since it also processes items already waiting."
+    );
+}
+
+export function wrapperCmd(mode: RunMode): string {
+  if (mode === "hold-only") return WRAPPER_CMD;
+  return WRAPPER_CMD.split("run --hold-only")
+    .join("run --execute")
+    .replace(
+      "REM   2. founders-os-tick run --execute   stages every fire for human review",
+      "REM   2. founders-os-tick run --execute   a model reads each fire and acts in the gate"
+    )
+    .replace(
+      "REM They run serially. Nothing is performed - staged items wait for a human.",
+      "REM They run serially. A model acts within the gate; sensitive sends still stage."
+    );
+}
+
 // ── Env file for the scheduled wrapper ──────────────────────
 // The wrapper `source`s this file, so a value with whitespace MUST be quoted
 // (an unquoted `KEY=a b` is parsed as "run command b with KEY=a"). init owns

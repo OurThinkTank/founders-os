@@ -15,9 +15,15 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { buildContext, governanceTools } from "@ourthinktank/founders-os-core";
-import { detectOs, defaultScheduler, managedPaths, type Scheduler } from "./paths.js";
+import { detectOs, defaultScheduler, managedPaths, type ManagedPaths, type OsKind, type Scheduler } from "./paths.js";
 import { scheduleStatus } from "./registrar.js";
 import { checkTickBinResolves } from "./resolve.js";
+import { parseEnvFile } from "./generators.js";
+import { checkAgentSdk, AGENT_SDK_PKG, type SdkCheck } from "./sdk.js";
+import { computePosture, renderPosture, type ScheduleMode } from "./posture.js";
+
+// Re-export so existing importers keep resolving the type from here.
+export type { ScheduleMode } from "./posture.js";
 
 type PolicyShape = { tier_outcomes: Record<string, string>; paused?: boolean };
 const getPolicy = governanceTools.get_policy.handler as unknown as (ctx: unknown, args: unknown) => Promise<{ policy: PolicyShape }>;
@@ -69,6 +75,48 @@ export function parseLastRun(logText: string): LastRun | null {
   return { at, ok, detail };
 }
 
+export interface AutodispatchState {
+  scheduleMode: ScheduleMode; // what the installed wrapper actually runs
+  sdkInstalled: boolean;
+  apiKey: boolean;
+  ready: boolean; // full-run schedule + SDK + key all present
+  label: string; // plain-language status
+}
+
+/** Pure: is the installed wrapper a full-run (execute) or hold-only one? The
+ * body carries the run posture verbatim (`run --execute` vs `run --hold-only`),
+ * so a substring is a reliable, dependency-free signal. */
+export function readScheduleMode(wrapperBody: string): ScheduleMode {
+  if (!wrapperBody) return "none";
+  return wrapperBody.includes("run --execute") ? "execute" : "hold-only";
+}
+
+/** Pure: combine the schedule posture with the SDK/API-key readiness into the
+ * one auto-dispatch status line: ready / SDK missing / no API key / hold-only. */
+export function describeAutodispatch(scheduleMode: ScheduleMode, sdk: SdkCheck): AutodispatchState {
+  let ready = false;
+  let label: string;
+  if (scheduleMode === "none") {
+    label = "not set up (enable with: founders-os-tick init --execute)";
+  } else if (scheduleMode === "hold-only") {
+    label = "schedule is hold-only; stages only (turn on with: founders-os-tick autosend slack --on)";
+  } else if (!sdk.sdkInstalled) {
+    label = `SDK didn't resolve; reinstall @ourthinktank/founders-os (${AGENT_SDK_PKG} ships with it)`;
+  } else if (!sdk.apiKey) {
+    label = `no ${sdk.apiKeyVar}; set it in the environment or the tick env file`;
+  } else {
+    ready = true;
+    label = "ready: full-run schedule, Agent SDK and API key all in place";
+  }
+  return { scheduleMode, sdkInstalled: sdk.sdkInstalled, apiKey: sdk.apiKey, ready, label };
+}
+
+/** Read the installed wrapper body for the platform, empty string if absent. */
+function readWrapperBody(paths: ManagedPaths, os: OsKind): string {
+  const p = os === "windows" ? paths.wrapperWin : paths.wrapperUnix;
+  return readFileSafe(p);
+}
+
 /** Pure: read a KEY=value from an env-file body, unquoting a quoted value. */
 export function readEnvValue(envText: string, key: string): string | undefined {
   for (const raw of envText.split("\n")) {
@@ -113,6 +161,25 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
   const connectorConfigured = existsSync(paths.connectorsFile);
   const autosend = await readAutosendState();
 
+  // Auto-dispatch readiness: what the wrapper actually runs, plus whether the
+  // full-run runner could start. The scheduled job sources the env FILE (not
+  // this shell), so merge it in before checking the provider + API key.
+  const scheduleMode = readScheduleMode(readWrapperBody(paths, os));
+  const sdk = checkAgentSdk({ ...process.env, ...parseEnvFile(envText) });
+  const autodispatch = describeAutodispatch(scheduleMode, sdk);
+
+  // The plain-language posture ladder: the single what/why/how/done answer,
+  // computed once and reused by init and autosend too.
+  const posture = computePosture({
+    scheduleRegistered: sched.registered,
+    scheduleMode,
+    autosendOn: autosend.known ? Boolean(autosend.on) : false,
+    tierKnown: autosend.known,
+    connectorConfigured,
+    sdk,
+    paused: Boolean(autosend.paused),
+  });
+
   // CLI reachability: a successful last run already proves the scheduled bin
   // resolves, so only probe (which can be slow for the npx form) when there
   // has never been a run.
@@ -133,6 +200,8 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
     last_run: lastRun,
     cli,
     autosend,
+    autodispatch,
+    posture: { rung: posture.rung, title: posture.title, healthy: posture.healthy, blockers: posture.blockers, next_step: posture.nextStep ?? null },
     model: model ?? null,
     connector_configured: connectorConfigured,
     config_dir: paths.configDir,
@@ -153,19 +222,12 @@ export async function runDoctor(a: DoctorArgs): Promise<number> {
   }
   const cliLabel = cli.reachable === true ? "reachable" : cli.reachable === false ? "NOT reachable — the hourly job may fail" : "unverified";
   process.stdout.write(`  CLI:        ${cliLabel} (${cli.detail})\n`);
-  // Auto-send from the live policy tier, when we could read it.
-  if (!autosend.known) {
-    process.stdout.write(`  Auto-send:  unknown (couldn't read the policy — check your credentials)\n`);
-  } else if (autosend.on) {
-    process.stdout.write(`  Auto-send:  ON — low-risk messages may post (external writes = ${autosend.tier}); email/secret/$ still held\n`);
-  } else {
-    process.stdout.write(`  Auto-send:  off — everything waits for you (turn on with: founders-os-tick autosend slack --on)\n`);
-  }
-  if (autosend.paused) {
-    process.stdout.write(`  Paused:     YES — all agents paused company-wide (unpause with pause_agents in a session)\n`);
-  }
   process.stdout.write(`  Connector:  ${connectorConfigured ? "Slack configured" : "none yet"}\n`);
-  process.stdout.write(`  Model:      ${model ?? "not set (hold-only needs none)"}\n`);
+  process.stdout.write(`  Model:      ${model ?? "not set (Preparing needs none)"}\n`);
+
+  // The posture ladder: what you're doing, the three rungs with you marked,
+  // whether it's working, and the exact next step.
+  process.stdout.write("\n" + renderPosture(posture));
   process.stdout.write(`\n  Review what fired: open Founders OS and ask "what fired?"\n`);
   return EXIT_OK;
 }

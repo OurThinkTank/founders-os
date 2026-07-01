@@ -13,8 +13,8 @@ import {
   buildSystemdTimer,
   buildCronLine,
   buildEnvFile,
-  WRAPPER_SH,
-  WRAPPER_CMD,
+  wrapperSh,
+  wrapperCmd,
   type Cadence,
 } from "./generators.js";
 import type { ManagedPaths, OsKind, Scheduler, UnitPaths } from "./paths.js";
@@ -60,9 +60,14 @@ export function buildInitPlan(cfg: InitConfig): InitPlan {
   }
   const envFile: PlannedFile = { path: cfg.paths.envFile, content: buildEnvFile(env), mode: 0o600 };
 
+  // The wrapper's run posture follows the opt-in: hold-only stages, execute
+  // runs the full-run runner. The schedule points at the wrapper PATH, so an
+  // upgrade later only rewrites this file's body — no re-registration.
+  const mode = cfg.execute ? "execute" : "hold-only";
+
   // ── Windows: the .cmd wrapper (reads the same env file) + a schtasks task ──
   if (cfg.os === "windows") {
-    const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperWin, content: WRAPPER_CMD, mode: 0o644 }];
+    const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperWin, content: wrapperCmd(mode), mode: 0o644 }];
     const register = buildRegisterCommands({
       os: cfg.os,
       scheduler: "taskscheduler",
@@ -76,7 +81,7 @@ export function buildInitPlan(cfg: InitConfig): InitPlan {
   }
 
   // ── macOS / Linux: the .sh wrapper + the OS unit ──
-  const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperUnix, content: WRAPPER_SH, mode: 0o755 }];
+  const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperUnix, content: wrapperSh(mode), mode: 0o755 }];
 
   const schedOpts = {
     wrapperPathUnix: cfg.paths.wrapperUnix,

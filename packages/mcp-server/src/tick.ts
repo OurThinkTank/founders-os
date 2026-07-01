@@ -138,6 +138,9 @@ init options:
   --hour=N           Hour of day for a daily cadence (default 6)
   --cron             Use cron instead of the OS default (launchd on macOS, systemd on Linux)
   --tick-bin=CMD     How the wrapper invokes the CLI (default: an npx form)
+  --execute          Opt into full-run auto-dispatch: preflight the Agent SDK +
+                     API key, write the model env, and schedule run --execute
+                     instead of hold-only. Default stays hold-only (nothing sends).
 
 detect options:
   --conditions=a,b   Restrict to these condition_types (default: all enabled)
@@ -475,7 +478,7 @@ async function main(): Promise<number> {
     return args.command === "" ? EXIT_USAGE : EXIT_OK;
   }
   if (args.command === "init") {
-    return runInit({ yes: args.yes, cadence: args.cadence, hour: args.hour, cron: args.cron, tickBin: args.tickBin });
+    return runInit({ yes: args.yes, cadence: args.cadence, hour: args.hour, cron: args.cron, tickBin: args.tickBin, execute: args.execute });
   }
   if (args.command === "doctor") {
     return runDoctor({ json: args.json });
