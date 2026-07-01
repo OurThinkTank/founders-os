@@ -7,14 +7,39 @@
 // the in-run counters are unreliable, so this reports VERIFIED state (the OS
 // scheduler + the wrapper log), not loose summary lines.
 //
-// Note (S1 scope): the auto-send tier lives in the server policy, wired in
-// with S3.6 (autosend). For now doctor reports local install health and
-// whether a connector is configured; it does not assert the policy tier.
+// The auto-send tier lives in the server policy. doctor reads it live
+// (best-effort): if creds are present it reports the real external_write tier
+// and the paused kill switch; if the policy can't be read it degrades to a
+// neutral line rather than failing, so doctor still works offline.
 // ============================================================
 
 import { readFileSync, existsSync } from "node:fs";
+import { buildContext, governanceTools } from "@ourthinktank/founders-os-core";
 import { detectOs, defaultScheduler, managedPaths, type Scheduler } from "./paths.js";
 import { scheduleStatus } from "./registrar.js";
+
+type PolicyShape = { tier_outcomes: Record<string, string>; paused?: boolean };
+const getPolicy = governanceTools.get_policy.handler as unknown as (ctx: unknown, args: unknown) => Promise<{ policy: PolicyShape }>;
+
+export interface AutosendState {
+  known: boolean; // false when the policy couldn't be read (no creds / offline)
+  on?: boolean; // external writes may auto-dispatch (tier != hold)
+  tier?: string; // the resolved external_write outcome
+  paused?: boolean; // company-wide kill switch
+}
+
+/** Read the live external_write tier, best-effort. Never throws: a missing
+ * creds / unreachable DB yields { known: false } so doctor still runs. */
+export async function readAutosendState(): Promise<AutosendState> {
+  try {
+    const ctx = buildContext();
+    const policy = (await getPolicy(ctx, {})).policy;
+    const tier = policy.tier_outcomes.external_write;
+    return { known: true, on: tier !== "hold_for_approval", tier, paused: Boolean(policy.paused) };
+  } catch {
+    return { known: false };
+  }
+}
 
 const EXIT_OK = 0;
 
@@ -65,7 +90,7 @@ function readFileSafe(path: string): string {
   }
 }
 
-export function runDoctor(a: DoctorArgs): number {
+export async function runDoctor(a: DoctorArgs): Promise<number> {
   const os = detectOs();
   const paths = managedPaths();
 
@@ -84,10 +109,12 @@ export function runDoctor(a: DoctorArgs): number {
   const envText = readFileSafe(paths.envFile);
   const model = readEnvValue(envText, "FOUNDERSOS_AGENT_MODEL");
   const connectorConfigured = existsSync(paths.connectorsFile);
+  const autosend = await readAutosendState();
 
   const report = {
     schedule: { registered: sched.registered, scheduler, detail: sched.detail },
     last_run: lastRun,
+    autosend,
     model: model ?? null,
     connector_configured: connectorConfigured,
     config_dir: paths.configDir,
@@ -106,10 +133,19 @@ export function runDoctor(a: DoctorArgs): number {
   } else {
     process.stdout.write(`  Last run:   never (waiting for the first scheduled tick)\n`);
   }
-  process.stdout.write(`  Auto-send:  off — everything waits for you (turn on later with autosend)\n`);
+  // Auto-send from the live policy tier, when we could read it.
+  if (!autosend.known) {
+    process.stdout.write(`  Auto-send:  unknown (couldn't read the policy — check your credentials)\n`);
+  } else if (autosend.on) {
+    process.stdout.write(`  Auto-send:  ON — low-risk messages may post (external writes = ${autosend.tier}); email/secret/$ still held\n`);
+  } else {
+    process.stdout.write(`  Auto-send:  off — everything waits for you (turn on with: founders-os-tick autosend slack --on)\n`);
+  }
+  if (autosend.paused) {
+    process.stdout.write(`  Paused:     YES — all agents paused company-wide (unpause with pause_agents in a session)\n`);
+  }
   process.stdout.write(`  Connector:  ${connectorConfigured ? "Slack configured" : "none yet"}\n`);
   process.stdout.write(`  Model:      ${model ?? "not set (hold-only needs none)"}\n`);
-  process.stdout.write(`\n  Pause everything:  founders-os-tick run is paused via pause_agents in a session.\n`);
-  process.stdout.write(`  Review what fired: open Founders OS and ask "what fired?"\n`);
+  process.stdout.write(`\n  Review what fired: open Founders OS and ask "what fired?"\n`);
   return EXIT_OK;
 }
