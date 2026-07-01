@@ -197,3 +197,20 @@ export function buildEnvFile(env: Record<string, string>): string {
 
   return lines.join("\n") + "\n";
 }
+
+/** Inverse of buildEnvFile: parse KEY=value lines (skipping comments/blanks),
+ * unquoting a quoted value. `connect` uses this to merge in the connector env
+ * vars without clobbering the creds init wrote. */
+export function parseEnvFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) continue;
+    const eq = line.indexOf("=");
+    const k = line.slice(0, eq).trim();
+    let v = line.slice(eq + 1);
+    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1).replace(/\\(["\\])/g, "$1");
+    out[k] = v;
+  }
+  return out;
+}

@@ -49,6 +49,8 @@ import {
 } from "./agent-runner.js";
 import { runInit } from "./setup/init.js";
 import { runDoctor } from "./setup/doctor.js";
+import { runConnectSlack } from "./setup/connect-slack.js";
+import { runAutosend } from "./setup/autosend.js";
 
 // Exit codes: 0 clean, 1 config/runtime failure, 2 usage error.
 const EXIT_OK = 0;
@@ -69,10 +71,13 @@ interface Args {
   cadence?: "hourly" | "daily";
   hour?: number;
   tickBin?: string;
+  // connect / autosend
+  positionals: string[]; // non-flag args after the command (e.g. "slack")
+  on?: boolean; // --on / --off
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false, execute: false, yes: false, cron: false };
+  const args: Args = { command: argv[0] ?? "", json: false, dry: false, quiet: false, holdOnly: false, execute: false, yes: false, cron: false, positionals: [] };
   for (const a of argv.slice(1)) {
     if (a === "--json") args.json = true;
     else if (a === "--dry") args.dry = true;
@@ -82,6 +87,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--yes" || a === "-y") args.yes = true;
     else if (a === "--cron") args.cron = true;
     else if (a === "--daily") args.cadence = "daily";
+    else if (a === "--on") args.on = true;
+    else if (a === "--off") args.on = false;
     else if (a.startsWith("--cadence=")) {
       const c = a.slice("--cadence=".length);
       if (c === "hourly" || c === "daily") args.cadence = c;
@@ -91,6 +98,8 @@ function parseArgs(argv: string[]): Args {
       args.tickBin = a.slice("--tick-bin=".length);
     } else if (a.startsWith("--conditions=")) {
       args.conditions = a.slice("--conditions=".length).split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (!a.startsWith("-")) {
+      args.positionals.push(a);
     }
   }
   return args;
@@ -115,6 +124,8 @@ const USAGE = `founders-os-tick — local scheduler for Founders OS triggers
 Usage:
   founders-os-tick init [options]        Guided setup: schedule the overnight check (no files to edit)
   founders-os-tick doctor [--json]       Show status: schedule, last run, model, connector
+  founders-os-tick connect slack         Connect Slack for the runner (mints a durable token; stage-first)
+  founders-os-tick autosend slack --on|--off  Turn unattended sending on/off (flips external_write)
   founders-os-tick detect [options]      Run data-condition detection, write the inbox
   founders-os-tick run --hold-only [opts] Drain the inbox: stage every fire for human review, perform nothing
   founders-os-tick run --execute [opts]   Model-driven full run (detect + withhold + record + reconcile)
@@ -468,6 +479,12 @@ async function main(): Promise<number> {
   }
   if (args.command === "doctor") {
     return runDoctor({ json: args.json });
+  }
+  if (args.command === "connect") {
+    return runConnectSlack({ connector: args.positionals[0] ?? "slack" });
+  }
+  if (args.command === "autosend") {
+    return runAutosend({ connector: args.positionals[0] ?? "slack", on: args.on, yes: args.yes });
   }
   if (args.command === "detect") {
     return runDetect(args);
