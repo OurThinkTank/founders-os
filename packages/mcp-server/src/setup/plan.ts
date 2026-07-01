@@ -14,6 +14,7 @@ import {
   buildCronLine,
   buildEnvFile,
   WRAPPER_SH,
+  WRAPPER_CMD,
   type Cadence,
 } from "./generators.js";
 import type { ManagedPaths, OsKind, Scheduler, UnitPaths } from "./paths.js";
@@ -50,10 +51,6 @@ const DEFAULT_AGENT_PROVIDER = "anthropic";
 const DEFAULT_AGENT_MODEL = "claude-sonnet-5";
 
 export function buildInitPlan(cfg: InitConfig): InitPlan {
-  if (cfg.os === "windows") {
-    throw new Error("buildInitPlan: Windows registration is handled separately (see ticket S4.1).");
-  }
-
   // The env the wrapper sources: creds + how to invoke the tick CLI, plus the
   // model config only when full run is opted into.
   const env: Record<string, string> = { ...cfg.creds, FOUNDERSOS_TICK_BIN: cfg.tickBin };
@@ -61,11 +58,25 @@ export function buildInitPlan(cfg: InitConfig): InitPlan {
     if (!env.FOUNDERSOS_AGENT_PROVIDER) env.FOUNDERSOS_AGENT_PROVIDER = DEFAULT_AGENT_PROVIDER;
     if (!env.FOUNDERSOS_AGENT_MODEL) env.FOUNDERSOS_AGENT_MODEL = DEFAULT_AGENT_MODEL;
   }
+  const envFile: PlannedFile = { path: cfg.paths.envFile, content: buildEnvFile(env), mode: 0o600 };
 
-  const files: PlannedFile[] = [
-    { path: cfg.paths.envFile, content: buildEnvFile(env), mode: 0o600 },
-    { path: cfg.paths.wrapperUnix, content: WRAPPER_SH, mode: 0o755 },
-  ];
+  // ── Windows: the .cmd wrapper (reads the same env file) + a schtasks task ──
+  if (cfg.os === "windows") {
+    const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperWin, content: WRAPPER_CMD, mode: 0o644 }];
+    const register = buildRegisterCommands({
+      os: cfg.os,
+      scheduler: "taskscheduler",
+      units: cfg.units,
+      cronLine: "",
+      wrapperWin: cfg.paths.wrapperWin,
+      cadence: cfg.cadence,
+      dailyHour: cfg.dailyHour,
+    });
+    return { files, register, os: cfg.os, scheduler: "taskscheduler" };
+  }
+
+  // ── macOS / Linux: the .sh wrapper + the OS unit ──
+  const files: PlannedFile[] = [envFile, { path: cfg.paths.wrapperUnix, content: WRAPPER_SH, mode: 0o755 }];
 
   const schedOpts = {
     wrapperPathUnix: cfg.paths.wrapperUnix,

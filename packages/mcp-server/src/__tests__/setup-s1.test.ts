@@ -80,8 +80,19 @@ describe("buildInitPlan", () => {
     expect(env).toContain("run --execute");
   });
 
-  it("Windows is deferred to S4", () => {
-    expect(() => buildInitPlan(cfg({ os: "windows" }))).toThrow(/Windows/);
+  it("Windows: writes the .cmd wrapper + env, registers a Task Scheduler task (S4.1)", () => {
+    const plan = buildInitPlan(cfg({ os: "windows" }));
+    const written = plan.files.map((f) => f.path);
+    expect(written).toContain(paths.wrapperWin);
+    expect(written).toContain(paths.envFile);
+    expect(written).not.toContain(units.launchdPlist);
+    expect(plan.scheduler).toBe("taskscheduler");
+    const reg = plan.register[0];
+    expect(reg.kind).toBe("exec");
+    if (reg.kind === "exec") {
+      expect(reg.cmd).toBe("schtasks");
+      expect(reg.args).toEqual(expect.arrayContaining(["/Create", "/TR", paths.wrapperWin, "/SC", "HOURLY", "/F"]));
+    }
   });
 });
 
@@ -91,6 +102,20 @@ describe("buildRegisterCommands", () => {
     expect(cmds[0]).toMatchObject({ kind: "exec", cmd: "launchctl", ignoreError: true });
     expect(cmds[0].kind === "exec" && cmds[0].args[0]).toBe("unload");
     expect(cmds[1].kind === "exec" && cmds[1].args).toContain("-w");
+  });
+
+  it("taskscheduler: hourly schtasks /Create /F (idempotent overwrite)", () => {
+    const cmds = buildRegisterCommands({ os: "windows", scheduler: "taskscheduler", units, cronLine: "", wrapperWin: "C:\\x\\foundersos-tick.cmd", cadence: "hourly" });
+    expect(cmds).toHaveLength(1);
+    const c = cmds[0];
+    expect(c.kind === "exec" && c.cmd).toBe("schtasks");
+    if (c.kind === "exec") expect(c.args).toEqual(["/Create", "/TN", "FoundersOS Tick", "/TR", "C:\\x\\foundersos-tick.cmd", "/SC", "HOURLY", "/F"]);
+  });
+
+  it("taskscheduler: daily uses /SC DAILY /ST HH:00", () => {
+    const cmds = buildRegisterCommands({ os: "windows", scheduler: "taskscheduler", units, cronLine: "", wrapperWin: "C:\\x\\t.cmd", cadence: "daily", dailyHour: 6 });
+    const c = cmds[0];
+    if (c.kind === "exec") expect(c.args).toEqual(expect.arrayContaining(["/SC", "DAILY", "/ST", "06:00"]));
   });
 });
 

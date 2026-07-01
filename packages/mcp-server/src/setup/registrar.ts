@@ -14,6 +14,7 @@ import type { OsKind, Scheduler, UnitPaths } from "./paths.js";
 export const CRON_TAG = "# founders-os-tick";
 const LAUNCHD_LABEL = "com.foundersos.tick";
 const SYSTEMD_TIMER = "foundersos-tick.timer";
+const TASK_NAME = "FoundersOS Tick";
 
 export type Command =
   | { kind: "exec"; cmd: string; args: string[]; ignoreError?: boolean; desc: string }
@@ -24,13 +25,37 @@ export interface RegisterInput {
   scheduler: Scheduler;
   units: UnitPaths;
   cronLine: string; // the bare crontab line (schedule + wrapper), no tag
+  // Windows (taskscheduler) inputs:
+  wrapperWin?: string;
+  cadence?: "hourly" | "daily";
+  dailyHour?: number;
+}
+
+function pad2(n: number): string {
+  return (n < 10 ? "0" : "") + n;
 }
 
 /** Pure: the ordered commands that register a schedule. Idempotent by
  * construction (launchd unloads before loading; systemd re-enable is a no-op;
- * cron-add replaces any prior tagged line). */
+ * cron-add replaces any prior tagged line; schtasks /Create /F overwrites). */
 export function buildRegisterCommands(input: RegisterInput): Command[] {
   const { scheduler, units } = input;
+
+  if (scheduler === "taskscheduler") {
+    // /F overwrites an existing task (idempotent). The task runs when the user
+    // is logged on (no stored password); to run while logged off, tick the
+    // "Run whether user is logged on or not" box in Task Scheduler once.
+    const when = input.cadence === "daily" ? ["/SC", "DAILY", "/ST", `${pad2(input.dailyHour ?? 6)}:00`] : ["/SC", "HOURLY"];
+    return [
+      {
+        kind: "exec",
+        cmd: "schtasks",
+        args: ["/Create", "/TN", TASK_NAME, "/TR", input.wrapperWin ?? "", ...when, "/F"],
+        ignoreError: false,
+        desc: "register the Task Scheduler task",
+      },
+    ];
+  }
 
   if (scheduler === "launchd") {
     return [
@@ -124,6 +149,11 @@ export function crontabHasTag(existing: string, tag: string): boolean {
 }
 
 export function scheduleStatus(os: OsKind, scheduler: Scheduler): ScheduleStatus {
+  if (scheduler === "taskscheduler") {
+    const r = spawnSync("schtasks", ["/Query", "/TN", TASK_NAME], { encoding: "utf-8" });
+    const registered = r.status === 0;
+    return { registered, detail: registered ? "Task Scheduler task present" : "task not found" };
+  }
   if (scheduler === "launchd") {
     const r = spawnSync("launchctl", ["list"], { encoding: "utf-8" });
     const registered = r.status === 0 && parseLaunchctlList(r.stdout || "");

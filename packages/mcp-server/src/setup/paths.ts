@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type OsKind = "macos" | "linux" | "windows";
-export type Scheduler = "launchd" | "systemd" | "cron";
+export type Scheduler = "launchd" | "systemd" | "cron" | "taskscheduler";
 
 export function detectOs(platform: string = process.platform): OsKind {
   if (platform === "darwin") return "macos";
@@ -67,5 +67,6 @@ export function unitPaths(env: NodeJS.ProcessEnv = process.env): UnitPaths {
  * has no systemd user session. */
 export function defaultScheduler(os: OsKind): Scheduler {
   if (os === "macos") return "launchd";
-  return "systemd"; // linux; windows handled separately (Task Scheduler)
+  if (os === "windows") return "taskscheduler";
+  return "systemd"; // linux
 }

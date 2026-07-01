@@ -8,14 +8,24 @@ REM   2. founders-os-tick run --hold-only   stages every fire for human review
 REM They run serially. Nothing is performed - staged items wait for a human.
 REM Point Task Scheduler at THIS .cmd so one task does both halves.
 REM
-REM Set your credentials below, or rely on machine/user environment variables.
+REM Credentials load from the env file (default
+REM %USERPROFILE%\.config\founders-os\foundersos-tick.env), same as the .sh
+REM wrapper; override the path with FOUNDERSOS_TICK_ENV. FOUNDERSOS_TICK_BIN
+REM sets how the CLI is invoked (default "founders-os-tick"; use an npx form
+REM if you did not install globally).
 REM ============================================================
 
-REM set "SUPABASE_URL=https://your-project.supabase.co"
-REM set "SUPABASE_SECRET_KEY=sb_secret_..."
+set "ENV_FILE=%FOUNDERSOS_TICK_ENV%"
+if "%ENV_FILE%"=="" set "ENV_FILE=%USERPROFILE%\.config\founders-os\foundersos-tick.env"
+if exist "%ENV_FILE%" (
+  for /f "usebackq eol=# tokens=1,* delims==" %%a in ("%ENV_FILE%") do set "%%a=%%~b"
+)
 
-set "TICK=founders-os-tick"
-set "LOG=%USERPROFILE%\foundersos-tick.log"
+if "%FOUNDERSOS_TICK_BIN%"=="" (set "TICK=founders-os-tick") else (set "TICK=%FOUNDERSOS_TICK_BIN%")
+
+set "LOG_DIR=%USERPROFILE%\.local\state"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
+set "LOG=%LOG_DIR%\foundersos-tick.log"
 
 echo %date% %time% [tick-wrapper] start>> "%LOG%"
 

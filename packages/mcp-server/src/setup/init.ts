@@ -43,11 +43,6 @@ function err(s: string): void {
 
 export async function runInit(a: InitArgs): Promise<number> {
   const os = detectOs();
-  if (os === "windows") {
-    err("[init] Windows setup is tracked as ticket S4.1 and not wired yet. See guides/tick-cli-usage.md for the manual Task Scheduler steps.");
-    return EXIT_FAIL;
-  }
-
   const paths = managedPaths();
   const units = unitPaths();
   const prompter = makePrompter({ assumeYes: a.yes });
@@ -87,7 +82,8 @@ export async function runInit(a: InitArgs): Promise<number> {
     const dailyHour = a.hour ?? 6;
 
     // ── Scheduler + how the wrapper invokes the CLI ──
-    const scheduler = a.cron ? "cron" : defaultScheduler(os);
+    // --cron only applies to unix; Windows always uses Task Scheduler.
+    const scheduler = a.cron && os !== "windows" ? "cron" : defaultScheduler(os);
     const tickBin = a.tickBin ?? DEFAULT_TICK_BIN;
 
     const cfg: InitConfig = { os, scheduler, cadence, dailyHour, execute: false, tickBin, creds, paths, units };
@@ -111,6 +107,9 @@ export async function runInit(a: InitArgs): Promise<number> {
       return EXIT_FAIL;
     }
     out(`✓ Registered an ${cadence} check with ${scheduler}.`);
+    if (os === "windows") {
+      out('  (Runs while you\'re logged on. To run while logged off, open Task Scheduler → "FoundersOS Tick" → tick "Run whether user is logged on or not".)');
+    }
 
     // ── First check now, so the user sees it work ──
     for (const [k, v] of Object.entries(creds)) if (!process.env[k]) process.env[k] = v;
