@@ -6,7 +6,7 @@
 // provisioned host, not here.
 // ============================================================
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,12 @@ describe("selectRunner", () => {
 
 describe("loadConnectorPolicy (S2.1: inline or file)", () => {
   const tmpFiles: string[] = [];
+  // Clear both before AND after each test so the suite is hermetic even when
+  // the runner's shell already exports a real policy (e.g. the live Slack demo).
+  beforeEach(() => {
+    delete process.env.FOUNDERSOS_CONNECTOR_POLICY;
+    delete process.env.FOUNDERSOS_CONNECTOR_POLICY_FILE;
+  });
   afterEach(() => {
     delete process.env.FOUNDERSOS_CONNECTOR_POLICY;
     delete process.env.FOUNDERSOS_CONNECTOR_POLICY_FILE;
