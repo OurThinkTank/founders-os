@@ -1167,7 +1167,9 @@ describe("memory hygiene codification — recall shape + change_reason", () => {
   });
 
   it("TC-MEM93: org memory_update records change_reason in the audit log", async () => {
-    const callerId = "default"; // must match mockCtx.userId; do not read env (test would flake when FOUNDERS_OS_USER_ID is set)
+    // Seed ownership to the mock context's user so the org-update guard passes
+    // regardless of any ambient FOUNDERS_OS_USER_ID in the runner's shell.
+    const callerId = mockCtx.userId;
     // An org-scoped memory created by the caller, so the update is permitted.
     mockDb.selectData = {
       id: "mem-uuid-org",
@@ -1192,7 +1194,9 @@ describe("memory hygiene codification — recall shape + change_reason", () => {
   });
 
   it("TC-MEM94: change_reason is omitted from audit metadata when not provided", async () => {
-    const callerId = "default"; // must match mockCtx.userId; do not read env (test would flake when FOUNDERS_OS_USER_ID is set)
+    // Seed ownership to the mock context's user so the org-update guard passes
+    // regardless of any ambient FOUNDERS_OS_USER_ID in the runner's shell.
+    const callerId = mockCtx.userId;
     mockDb.selectData = {
       id: "mem-uuid-org",
       user_id: "org",
