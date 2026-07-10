@@ -24,12 +24,12 @@ New to AI tools, or handing this to someone who is? Start with [Read This First]
 | **Financial** | 14 | Double-entry ledger, P&L, multi-company, per-user access control |
 | **Feeds** | 13 | RSS/Atom/JSON reader, briefings, bookmarks, pins |
 | **Memory** | 5 | Semantic memory with personal + org scopes, pgvector, dedup, metadata filters |
-| **Surfaces** | 4 | Cross-domain reads: session start, entity cards, weekly retro, stuck list |
+| **Surfaces** | 6 | Cross-domain reads: session start, entity cards, weekly retro, stuck list, session checkpoints, project history |
 | **Members** | 4 | Org membership directory, owner designation |
 | **Audit + Restore** | 2 | Full audit log; soft-delete recovery |
 | **Diagnostic** | 5 | Ping, version, usage guide, capability explorer, demos |
 
-92 tools total across 12 modules.
+94 tools total across 12 modules.
 
 ## Quick Start
 
@@ -85,6 +85,8 @@ Remember for the org: targeting SMB fintech in Q3 -> memory_store
 Show me OTT's P&L for Q1                          -> get_pl_report
 Run the customer-onboarding playbook for Acme     -> run_playbook
 Give me my weekly retro for LinkedIn              -> get_weekly_retro
+Let's checkpoint - wrap up this session           -> checkpoint
+What's happened on founders-os lately?            -> get_project_history
 ```
 
 ---
@@ -211,7 +213,7 @@ Semantic memory backed by pgvector with personal and org scopes, near-duplicate 
 
 ---
 
-## Surfaces (4 tools)
+## Surfaces (6 tools)
 
 Cross-domain read views that compose data from tasks, CRM, finance, and feeds into ready-to-render dashboards for AI agents.
 
@@ -221,6 +223,8 @@ Cross-domain read views that compose data from tasks, CRM, finance, and feeds in
 | `get_entity_card` | Complete picture of any entity (customer, contact, transaction, project) with open tasks, recent interactions, and linked records in one call. |
 | `get_weekly_retro` | Completed-task retrospective grouped by tag with completion notes. Can format as a LinkedIn-ready draft. |
 | `get_stuck_list` | Surfaces stuck, stale, and overdue tasks that need triage, with days-stale counts and suggested actions. |
+| `checkpoint` | End-of-session bookend to `get_session_start`. Returns the ordered wrap-up procedure (summarize, capture repo changes as commit links, store the record, propose follow-up tasks, write the handoff doc), the exact memory call to make, and the previous checkpoint so open items carry forward. Rides memory - no new entity, no migration. |
+| `get_project_history` | Chronological, newest-first timeline of a project's checkpoints; the "what happened, in order" companion to semantic memory recall. Pass `kind: 'all'` for every memory, not just checkpoints. |
 
 ---
 
