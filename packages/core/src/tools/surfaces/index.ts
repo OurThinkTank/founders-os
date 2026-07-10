@@ -910,6 +910,16 @@ export const surfaceTools: ToolMap = {
         .enum(["org", "personal"])
         .optional()
         .describe("Scope to store the checkpoint under. Defaults to 'org' (team-visible)."),
+      author: z
+        .enum(["me", "anyone"])
+        .optional()
+        .describe(
+          "Whose previous checkpoint to carry forward. 'me' (default) returns your own last " +
+          "checkpoint for this project - the right choice for resuming your own thread on a " +
+          "shared team project, so a teammate's session is not picked up by accident. 'anyone' " +
+          "returns the team's most recent checkpoint. The handoff -NN sequence is always counted " +
+          "team-wide regardless of this setting, so shared-repo filenames never collide."
+        ),
       timezone: z
         .string()
         .optional()
@@ -918,20 +928,25 @@ export const surfaceTools: ToolMap = {
     handler: async (ctx: ToolContext, {
       project,
       scope = "org",
+      author = "me",
       timezone,
     }: {
       project?: string;
       scope?: "org" | "personal";
+      author?: "me" | "anyone";
       timezone?: string;
     }) => {
       const today = getLocalDateStr(timezone);
 
       // Pull the most recent checkpoint for this project so the agent can carry
-      // forward unfinished OPEN/NEXT items. Visibility mirrors get_project_history.
+      // forward unfinished OPEN/NEXT items. Defaults to the caller's OWN last
+      // checkpoint (author='me') so a teammate's session on a shared org project
+      // is not resumed by accident; author='anyone' returns the team's latest.
       let previous_checkpoint: {
         id: string;
         content: string;
         created_at: string;
+        created_by: string | null;
       } | null = null;
 
       // Per-day sequence number (NN) for the handoff-doc filename. Best-effort
@@ -944,7 +959,7 @@ export const surfaceTools: ToolMap = {
       if (project) {
         const { data } = await ctx.db
           .from("memories")
-          .select("id, content, created_at")
+          .select("id, content, created_at, created_by")
           .eq("company_id", ctx.companyId)
           .eq("project", project)
           .eq("metadata->>kind", "checkpoint")
@@ -952,8 +967,23 @@ export const surfaceTools: ToolMap = {
           .order("created_at", { ascending: false })
           .limit(50);
         if (Array.isArray(data) && data.length > 0) {
-          previous_checkpoint = data[0] as { id: string; content: string; created_at: string };
-          const todayCount = (data as { created_at: string }[]).filter(
+          const rows = data as {
+            id: string;
+            content: string;
+            created_at: string;
+            created_by: string | null;
+          }[];
+          // previous_checkpoint: the caller's own last checkpoint by default,
+          // else the team's most recent when author='anyone'.
+          const pick =
+            author === "anyone"
+              ? rows[0]
+              : rows.find((m) => m.created_by === ctx.userId) ?? null;
+          previous_checkpoint = pick ?? null;
+          // NN is ALWAYS team-wide: count every checkpoint that landed today
+          // regardless of author, so handoff filenames in the shared repo do
+          // not collide across teammates.
+          const todayCount = rows.filter(
             (m) => localDateOf(m.created_at, timezone) === today,
           ).length;
           handoff_seq = todayCount + 1;
@@ -964,6 +994,7 @@ export const surfaceTools: ToolMap = {
         today,
         project: project ?? null,
         scope,
+        previous_checkpoint_author: author,
         procedure: [
           {
             step: 1,
@@ -1061,6 +1092,14 @@ export const surfaceTools: ToolMap = {
         .enum(["org", "personal", "both"])
         .optional()
         .describe("Which memories to include: 'org', 'personal', or 'both' (default)."),
+      author: z
+        .enum(["me", "anyone"])
+        .optional()
+        .describe(
+          "Whose entries to include. 'me' (default) returns only entries you authored " +
+          "(created_by = you), so on a shared team project you resume your own thread rather " +
+          "than a teammate's. 'anyone' returns the whole team's entries for the project."
+        ),
       limit: z
         .number()
         .int()
@@ -1081,6 +1120,7 @@ export const surfaceTools: ToolMap = {
       project,
       kind = "checkpoint",
       scope = "both",
+      author = "me",
       limit = 20,
       from_date,
       to_date,
@@ -1088,13 +1128,14 @@ export const surfaceTools: ToolMap = {
       project: string;
       kind?: string;
       scope?: "org" | "personal" | "both";
+      author?: "me" | "anyone";
       limit?: number;
       from_date?: string;
       to_date?: string;
     }) => {
       let q = ctx.db
         .from("memories")
-        .select("id, user_id, scope, project, content, source_tool, metadata, created_at")
+        .select("id, user_id, created_by, scope, project, content, source_tool, metadata, created_at")
         .eq("company_id", ctx.companyId)
         .eq("project", project);
 
@@ -1106,6 +1147,13 @@ export const surfaceTools: ToolMap = {
         q = q.eq("user_id", ctx.userId);
       } else {
         q = q.or(`user_id.eq.${ctx.userId},user_id.eq.org`);
+      }
+
+      // author='me' (default) narrows to entries the caller authored, so a shared
+      // org project resumes the caller's own thread rather than a teammate's.
+      // created_by is stored as the real author even on org-scoped rows.
+      if (author === "me") {
+        q = q.eq("created_by", ctx.userId);
       }
 
       // kind='all' means no kind filter; otherwise match metadata.kind exactly.
