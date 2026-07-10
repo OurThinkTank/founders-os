@@ -588,3 +588,46 @@ describe("checkpoint — store_with contract", () => {
     expect(storeParams("personal", "x").scope).toBe("personal");
   });
 });
+
+// ── checkpoint / get_project_history: author selection + team-wide NN ─────────
+// Mirrors the previous_checkpoint pick (author='me' default vs 'anyone') and the
+// always-team-wide today-count that drives the -NN handoff sequence.
+
+describe("checkpoint — author selection and team-wide sequence", () => {
+  type Row = { id: string; created_at: string; created_by: string | null };
+  const CALLER = "vince";
+
+  const pickPrevious = (rows: Row[], caller: string, author: "me" | "anyone") =>
+    author === "anyone" ? rows[0] ?? null : rows.find((r) => r.created_by === caller) ?? null;
+
+  const localDateOf = (ts: string) =>
+    new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const todayCount = (rows: Row[], today: string) =>
+    rows.filter((r) => localDateOf(r.created_at) === today).length;
+
+  // newest-first: Doug x2 today, Vince x1 today, Vince x1 yesterday
+  const rows: Row[] = [
+    { id: "d2", created_at: "2026-07-10T20:00:00Z", created_by: "doug" },
+    { id: "d1", created_at: "2026-07-10T18:00:00Z", created_by: "doug" },
+    { id: "v1", created_at: "2026-07-10T14:00:00Z", created_by: "vince" },
+    { id: "v0", created_at: "2026-07-09T14:00:00Z", created_by: "vince" },
+  ];
+
+  it("TC-SUR53: author='me' returns the caller's own last checkpoint, not the team's newest", () => {
+    expect(pickPrevious(rows, CALLER, "me")?.id).toBe("v1");
+  });
+
+  it("TC-SUR54: author='anyone' returns the team's newest checkpoint", () => {
+    expect(pickPrevious(rows, CALLER, "anyone")?.id).toBe("d2");
+  });
+
+  it("TC-SUR55: NN counts today's checkpoints team-wide, regardless of author", () => {
+    // d2, d1, v1 landed today -> next sequence number is 4
+    expect(todayCount(rows, "2026-07-10") + 1).toBe(4);
+  });
+
+  it("TC-SUR56: author='me' with no own checkpoints returns null (no fallback to a teammate)", () => {
+    const dougOnly = rows.filter((r) => r.created_by === "doug");
+    expect(pickPrevious(dougOnly, CALLER, "me")).toBeNull();
+  });
+});
