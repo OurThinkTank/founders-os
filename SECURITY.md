@@ -1,7 +1,7 @@
 <!--
-  Before launch: confirm security@foundersmcp.com is a real, monitored inbox,
+  Reporting contact: confirm security@foundersmcp.com is a real, monitored inbox,
   or replace it with one you watch. The GitHub Security Advisories link is the
-  preferred channel and works as soon as the repo is public.
+  preferred channel and works now that the repo is public.
 -->
 
 # Security Policy

@@ -1,6 +1,6 @@
 <!--
   Contributor Covenant 3.0, used verbatim except for the reporting contact.
-  Before launch: confirm conduct@foundersmcp.com is a real, monitored inbox,
+  Reporting contact: confirm conduct@foundersmcp.com is a real, monitored inbox,
   or replace it with one you watch. Licensed CC BY-SA 4.0 (see Attribution).
 -->
 

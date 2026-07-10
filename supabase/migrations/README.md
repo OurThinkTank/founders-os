@@ -1,6 +1,6 @@
 # Migrations
 
-This directory is intentionally empty at launch.
+This directory is currently empty.
 
 Fresh installs run [`../setup.sql`](../setup.sql) (or use the
 [setup wizard](https://foundersmcp.com/setup), which serves the same file with
