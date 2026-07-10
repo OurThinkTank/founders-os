@@ -44,12 +44,32 @@ const cardEntityType = z.enum([
   "transaction",
 ]);
 
+// Local date (YYYY-MM-DD) of a stored timestamp, in the caller's timezone.
+// Used to count how many checkpoints already landed "today" so the handoff
+// doc gets the right per-day sequence number.
+function localDateOf(ts: string, timezone?: string): string {
+  const tz = getLocalTimezone(timezone);
+  try {
+    return new Date(ts).toLocaleDateString("en-CA", { timeZone: tz });
+  } catch {
+    return new Date(ts).toISOString().split("T")[0];
+  }
+}
+
 // Suggested path for the long-form session handoff doc, written into the
 // project repo (not founders-os). Falls back to a generic name when the
 // project tag is unknown.
-function handoffDocHint(project: string | undefined, today: string): string {
+//
+// The filename ends with a two-digit, per-day sequence (`-NN`): 01 = first
+// session that day, 02 = second, and so on, resetting to 01 each day. Because
+// the number is zero-padded and sits at the end, handoff docs sort in true
+// chronological order within a day. `seq` is a best-effort default derived
+// from how many checkpoints already landed today; the agent reconciles it
+// against the actual files in the target folder when one exists.
+function handoffDocHint(project: string | undefined, today: string, seq = 1): string {
   const slug = project ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "session";
-  return `docs/${slug}-session-handoff-${today}.md`;
+  const nn = String(Math.max(1, seq)).padStart(2, "0");
+  return `docs/${slug}-session-handoff-${today}-${nn}.md`;
 }
 
 export const surfaceTools: ToolMap = {
@@ -917,6 +937,13 @@ export const surfaceTools: ToolMap = {
         created_at: string;
       } | null = null;
 
+      // Per-day sequence number (NN) for the handoff-doc filename. Best-effort
+      // default: how many checkpoints for this project already landed today,
+      // plus one. This session's checkpoint is not stored yet at call time, so
+      // an empty day yields 1 (→ "-01"). The agent reconciles NN against the
+      // actual files in the target folder when the project has one.
+      let handoff_seq = 1;
+
       if (project) {
         const { data } = await ctx.db
           .from("memories")
@@ -926,9 +953,13 @@ export const surfaceTools: ToolMap = {
           .eq("metadata->>kind", "checkpoint")
           .or(`user_id.eq.${ctx.userId},user_id.eq.org`)
           .order("created_at", { ascending: false })
-          .limit(1);
+          .limit(50);
         if (Array.isArray(data) && data.length > 0) {
           previous_checkpoint = data[0] as { id: string; content: string; created_at: string };
+          const todayCount = (data as { created_at: string }[]).filter(
+            (m) => localDateOf(m.created_at, timezone) === today,
+          ).length;
+          handoff_seq = todayCount + 1;
         }
       }
 
@@ -967,7 +998,7 @@ export const surfaceTools: ToolMap = {
           {
             step: 6,
             action: "Write the handoff doc",
-            detail: `Write a detailed handoff markdown file to '${handoffDocHint(project, today)}' inside the project repo. Put its path in the stored checkpoint body.`,
+            detail: `Write a detailed handoff markdown file inside the project repo, using the path in \`handoff_doc_hint\` (or wherever this project keeps its handoff docs). The filename ends with a two-digit per-day sequence (\`-NN\`): the hint defaults to '${handoffDocHint(project, today, handoff_seq)}', but if handoff docs for ${today} already exist in the target folder, use the next number after the highest one there. Put the final path in the stored checkpoint body.`,
           },
         ],
         store_with: {
@@ -988,7 +1019,16 @@ export const surfaceTools: ToolMap = {
           ],
           note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries.",
         },
-        handoff_doc_hint: handoffDocHint(project, today),
+        handoff_doc_hint: handoffDocHint(project, today, handoff_seq),
+        handoff_naming: {
+          convention: "<project>-session-handoff-YYYY-MM-DD-NN.md",
+          nn: "Two-digit, per-day sequence. 01 = first session that day; resets to 01 each day. Zero-padded so files sort chronologically within a day.",
+          suggested_nn: String(Math.max(1, handoff_seq)).padStart(2, "0"),
+          reconcile:
+            "suggested_nn is derived from today's checkpoint count. If handoff docs for today already exist in the project's handoff folder, use the next number after the highest one there instead - the files are the source of truth.",
+          feature_docs:
+            "Feature-specific plan/handoff docs written during this session carry the SAME -NN so they group with the session (e.g. <topic>-plan-YYYY-MM-DD-NN.md).",
+        },
         previous_checkpoint,
         guidance:
           "Review the previous_checkpoint OPEN/NEXT items and note which were resolved this " +
