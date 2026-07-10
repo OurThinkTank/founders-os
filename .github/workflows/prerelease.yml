@@ -1,0 +1,111 @@
+name: Publish prerelease to npm
+
+# Manual prerelease channel. Publishes both packages under a non-latest
+# dist-tag (default "next") so testers can `npx @ourthinktank/founders-os@next`
+# without affecting `latest`. Cut from develop, not main.
+#
+# This is separate from publish.yml (which fires on a published GitHub release
+# and owns the `latest` line). Keep them apart so a prerelease can never move
+# `latest`: this workflow refuses a `latest` dist-tag and a non-prerelease
+# version below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Prerelease version, e.g. 0.15.0-rc.1 (must contain a hyphen)"
+        required: true
+        type: string
+      ref:
+        description: "Branch or ref to publish from"
+        required: true
+        default: "develop"
+        type: string
+      dist_tag:
+        description: "npm dist-tag (must not be 'latest')"
+        required: true
+        default: "next"
+        type: string
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance on the public repo
+    steps:
+      - name: Validate inputs
+        run: |
+          VERSION="${{ inputs.version }}"
+          TAG="${{ inputs.dist_tag }}"
+          # Must be a prerelease semver (X.Y.Z-<identifier>). The hyphen is what
+          # keeps npm from treating it as a stable release.
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$'; then
+            echo "::error::version must be a prerelease semver like 0.15.0-rc.1"
+            exit 1
+          fi
+          # Never let a prerelease take over the latest dist-tag.
+          if [ "$TAG" = "latest" ]; then
+            echo "::error::dist_tag must not be 'latest' for a prerelease"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@ourthinktank"
+
+      - name: Set workspace versions
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "Publishing prerelease: $VERSION (tag: ${{ inputs.dist_tag }})"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm -w packages/core version "$VERSION" --no-git-tag-version --allow-same-version
+          npm -w packages/mcp-server version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # Order matters: core must be on the registry before mcp-server, because
+      # mcp-server depends on it. The local workspace uses "*" for the core
+      # dependency; we pin it to the exact prerelease version before publishing
+      # mcp-server so consumers resolve a concrete prerelease. Same shape as
+      # publish.yml, but with --tag so `latest` is never touched.
+      - name: Publish core
+        run: npm publish -w packages/core --tag "${{ inputs.dist_tag }}" --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Pin mcp-server core dependency to exact version
+        run: npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=${{ inputs.version }}"
+
+      - name: Publish mcp-server
+        run: npm publish -w packages/mcp-server --tag "${{ inputs.dist_tag }}" --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Prerelease published"
+            echo ""
+            echo "- Version: \`${{ inputs.version }}\`"
+            echo "- Dist-tag: \`${{ inputs.dist_tag }}\`"
+            echo "- From ref: \`${{ inputs.ref }}\`"
+            echo ""
+            echo "Test it:"
+            echo "\`\`\`"
+            echo "npx -y @ourthinktank/founders-os@${{ inputs.dist_tag }}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
