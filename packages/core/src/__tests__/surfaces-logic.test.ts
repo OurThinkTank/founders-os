@@ -516,34 +516,51 @@ describe("get_project_history — timeline markdown", () => {
 // Mirrors handoffDocHint() and the store_with block in surfaces/index.ts.
 
 describe("checkpoint — handoff doc hint", () => {
-  const handoffDocHint = (project: string | undefined, today: string): string => {
+  const handoffDocHint = (
+    project: string | undefined,
+    today: string,
+    seq = 1
+  ): string => {
     const slug = project
       ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
       : "session";
-    return `docs/${slug}-session-handoff-${today}.md`;
+    const nn = String(Math.max(1, seq)).padStart(2, "0");
+    return `docs/${slug}-session-handoff-${today}-${nn}.md`;
   };
 
   it("TC-SUR46: builds a slugified path from the project tag", () => {
     expect(handoffDocHint("marching-maestro", "2026-06-17")).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17.md"
+      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR47: normalizes casing and spaces to a clean slug", () => {
     expect(handoffDocHint("Marching Maestro", "2026-06-17")).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17.md"
+      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR48: falls back to 'session' when no project is given", () => {
     expect(handoffDocHint(undefined, "2026-06-17")).toBe(
-      "docs/session-session-handoff-2026-06-17.md"
+      "docs/session-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR49: strips leading/trailing separators from messy tags", () => {
     expect(handoffDocHint("__TalkDoc__", "2026-06-17")).toBe(
-      "docs/talkdoc-session-handoff-2026-06-17.md"
+      "docs/talkdoc-session-handoff-2026-06-17-01.md"
+    );
+  });
+
+  it("TC-SUR49b: zero-pads a later per-day sequence number", () => {
+    expect(handoffDocHint("marching-maestro", "2026-06-17", 3)).toBe(
+      "docs/marching-maestro-session-handoff-2026-06-17-03.md"
+    );
+  });
+
+  it("TC-SUR49c: clamps a non-positive sequence to 01", () => {
+    expect(handoffDocHint("marching-maestro", "2026-06-17", 0)).toBe(
+      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
     );
   });
 });
