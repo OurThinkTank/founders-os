@@ -1,8 +1,8 @@
 {
-  "$schema": "https://glama.ai/mcp/schema/glama.json",
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
   "maintainers": [
     "OurThinkTank",
-    "Trisdane",
+    "DougDimola",
     "Vince-Oswalt"
   ]
 }
