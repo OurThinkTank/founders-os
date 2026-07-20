@@ -776,3 +776,68 @@ describe("get_last_checkpoint — no own checkpoints edge", () => {
     expect(r.team_latest_offer).toBeNull();
   });
 });
+
+describe("get_last_checkpoint — handoff doc extraction", () => {
+  // Mirrors extractHandoffDoc in surfaces/index.ts: metadata first, then the
+  // standardized session-handoff filename shape, then a label-anchored prose parse.
+  const extractHandoffDoc = (
+    content: string,
+    metadata: Record<string, unknown> | null
+  ): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } => {
+    const metaVal =
+      metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
+    if (metaVal) return { path: metaVal, source: "metadata" };
+    const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
+    if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
+    const label = content.match(
+      /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i
+    );
+    if (label) return { path: label[1], source: "parsed" };
+    return { source: "none" };
+  };
+
+  it("TC-SUR71: structured metadata.handoff_doc takes precedence over the body", () => {
+    const r = extractHandoffDoc(
+      "## Handoff doc path\nother-session-handoff-2026-07-01-01.md",
+      { handoff_doc: "canonical/x-session-handoff-2026-07-20-01.md" }
+    );
+    expect(r.source).toBe("metadata");
+    expect(r.path).toBe("canonical/x-session-handoff-2026-07-20-01.md");
+  });
+
+  it("TC-SUR72: markdown-header footer (path on next line) resolves via the filename convention", () => {
+    const r = extractHandoffDoc(
+      "...body...\n\n## Handoff doc path\nvouch-docs/handoffs/vouch-session-handoff-2026-07-19-01.md",
+      null
+    );
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("vouch-docs/handoffs/vouch-session-handoff-2026-07-19-01.md");
+  });
+
+  it("TC-SUR73: inline 'Handoff doc: <path>' footer also resolves via the convention", () => {
+    const r = extractHandoffDoc(
+      "Handoff doc: founders-os-docs/handoffs/founders-os-session-handoff-2026-07-10-02.md",
+      null
+    );
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("founders-os-docs/handoffs/founders-os-session-handoff-2026-07-10-02.md");
+  });
+
+  it("TC-SUR74: the session-handoff file is picked from among other .md references", () => {
+    const body =
+      "REPO CHANGES: release/release-notes-v1.4.0.md, proposals/checkpoint-procedure.md\n" +
+      "## Handoff doc path\ndocs/marching-maestro-session-handoff-2026-07-14-02.md";
+    const r = extractHandoffDoc(body, null);
+    expect(r.path).toBe("docs/marching-maestro-session-handoff-2026-07-14-02.md");
+    expect(r.path).not.toContain("release-notes");
+  });
+
+  it("TC-SUR75: non-standard handoff name falls back to label parse; nothing yields 'none'", () => {
+    const parsed = extractHandoffDoc("Full handoff: docs/legacy-wrapup-2026-06-15.md", null);
+    expect(parsed.source).toBe("parsed");
+    expect(parsed.path).toBe("docs/legacy-wrapup-2026-06-15.md");
+    const none = extractHandoffDoc("No handoff written this session.", null);
+    expect(none.source).toBe("none");
+    expect(none.path).toBeUndefined();
+  });
+});

@@ -86,6 +86,38 @@ function handoffDocHint(project: string | undefined, today: string, seq = 1): st
 const LAST_CHECKPOINT_STALE_DAYS = 14;
 const LAST_CHECKPOINT_NEAR_TIE_DAYS = 1;
 
+// Resolve the handoff-doc pointer for a checkpoint. Reliability across every
+// project and user comes from anchoring on the two things we control, not the
+// prose label a model happened to write (which varies: "Handoff doc:",
+// "## Handoff doc path", "Full handoff:", "Latest handoff doc:", ...):
+//   1. metadata.handoff_doc - the structured field stamped at checkpoint-write
+//      time (once memory_summarize_and_store records it). Phrasing-independent.
+//   2. Filename convention - the checkpoint procedure names every handoff doc
+//      <slug>-session-handoff-YYYY-MM-DD-NN.md, so a token matching
+//      *session-handoff*.md IS the handoff doc regardless of surrounding text,
+//      and is unique among the many .md files a checkpoint body cites. Take the
+//      last match (the handoff line sits near the end and is most specific).
+//   3. Last resort - a label-anchored prose parse for non-standard handoff names.
+// The source is returned so callers can tell how confident the resolution is.
+function extractHandoffDoc(
+  content: string,
+  metadata: Record<string, unknown> | null,
+): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } {
+  const metaVal =
+    metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
+  if (metaVal) return { path: metaVal, source: "metadata" };
+
+  const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
+  if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
+
+  const label = content.match(
+    /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i,
+  );
+  if (label) return { path: label[1], source: "parsed" };
+
+  return { source: "none" };
+}
+
 export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   // get_entity_card
@@ -1033,7 +1065,7 @@ export const surfaceTools: ToolMap = {
           {
             step: 4,
             action: "Store the checkpoint record",
-            detail: "Call memory_summarize_and_store using the params in `store_with`. Structure the body with the sections in `store_with.body_sections`.",
+            detail: "Call memory_summarize_and_store using the params in `store_with`. Structure the body with the sections in `store_with.body_sections`. Pass handoff_doc set to the final handoff path (from step 6) so the pointer is stored as structured metadata, not only in the prose.",
           },
           {
             step: 5,
@@ -1052,6 +1084,7 @@ export const surfaceTools: ToolMap = {
             scope,
             project: project ?? "<ask the user>",
             kind: "checkpoint",
+            handoff_doc: "<the handoff doc path you write in step 6>",
             resolution: "confirm",
           },
           body_sections: [
@@ -1062,7 +1095,7 @@ export const surfaceTools: ToolMap = {
             "OPEN / NEXT (carryovers)",
             "Handoff doc path",
           ],
-          note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries.",
+          note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries. Set handoff_doc to the final reconciled handoff path (the same file you write in step 6) so get_last_checkpoint returns it as a structured field instead of parsing it out of the body.",
         },
         handoff_doc_hint: handoffDocHint(project, today, handoff_seq),
         handoff_naming: {
@@ -1331,7 +1364,7 @@ export const surfaceTools: ToolMap = {
       // author on both, so author='me' isolates the caller's own thread.
       let q = ctx.db
         .from("memories")
-        .select("id, project, content, created_at, created_by")
+        .select("id, project, content, created_at, created_by, metadata")
         .eq("company_id", ctx.companyId)
         .eq("metadata->>kind", "checkpoint")
         .or(`user_id.eq.${ctx.userId},user_id.eq.org`);
@@ -1349,6 +1382,7 @@ export const surfaceTools: ToolMap = {
         content: string;
         created_at: string;
         created_by: string | null;
+        metadata: Record<string, unknown> | null;
       }>;
 
       const scopeLabel = isGlobal ? "global" : project!;
@@ -1465,11 +1499,9 @@ export const surfaceTools: ToolMap = {
         );
       }
 
-      // Best-effort handoff-doc pointer from the checkpoint body.
-      const handoffMatch = top.content.match(
-        /(?:^|\n)\s*(?:Full\s+)?[Hh]andoff(?:\s+doc)?(?:\s+path)?:?\s*(\S+\.md)/
-      );
-      const handoff_doc = handoffMatch ? handoffMatch[1] : undefined;
+      // Handoff-doc pointer, resolved by precedence: structured metadata, then the
+      // standardized session-handoff filename shape, then a label-anchored parse.
+      const handoff = extractHandoffDoc(top.content, top.metadata);
 
       const recommended = {
         id: top.id,
@@ -1478,7 +1510,8 @@ export const surfaceTools: ToolMap = {
         created_at: top.created_at,
         age_days: ageDays(top.created_at),
         content: top.content,
-        ...(handoff_doc ? { handoff_doc } : {}),
+        ...(handoff.path ? { handoff_doc: handoff.path } : {}),
+        handoff_doc_source: handoff.source,
       };
 
       // tier_3 markdown: recommended headline + content, then a compact alternatives table.
