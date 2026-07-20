@@ -631,3 +631,213 @@ describe("checkpoint — author selection and team-wide sequence", () => {
     expect(pickPrevious(dougOnly, CALLER, "me")).toBeNull();
   });
 });
+
+// ── get_last_checkpoint: scope, disambiguation, ask-vs-answer, no-own edge ─────
+// Mirrors the get_last_checkpoint handler logic in surfaces/index.ts.
+
+describe("get_last_checkpoint — project scope resolution", () => {
+  // Mirrors: const isGlobal = !project;  (omitted project => global search)
+  const isGlobal = (project?: string) => !project;
+
+  it("TC-SUR57: no project means a global, cross-project search", () => {
+    expect(isGlobal(undefined)).toBe(true);
+  });
+
+  it("TC-SUR58: a supplied project scopes the search (no global back-fill)", () => {
+    expect(isGlobal("founders-os")).toBe(false);
+  });
+});
+
+describe("get_last_checkpoint — needs_disambiguation", () => {
+  const DAY = 86_400_000;
+  const STALE = 14; // LAST_CHECKPOINT_STALE_DAYS
+  const NEAR_TIE = 1; // LAST_CHECKPOINT_NEAR_TIE_DAYS
+  type Row = { project: string | null; created_at: string };
+
+  const ageDays = (nowMs: number, ts: string) =>
+    Math.floor((nowMs - new Date(ts).getTime()) / DAY);
+  const daysBetween = (a: string, b: string) =>
+    Math.abs(new Date(a).getTime() - new Date(b).getTime()) / DAY;
+
+  const needsDisambiguation = (isGlobal: boolean, rows: Row[], nowMs: number) => {
+    const top = rows[0];
+    const runnerUp = rows[1];
+    const crossProjectNearTie =
+      isGlobal &&
+      !!runnerUp &&
+      runnerUp.project !== top.project &&
+      daysBetween(top.created_at, runnerUp.created_at) <= NEAR_TIE;
+    const staleTop = ageDays(nowMs, top.created_at) > STALE;
+    return crossProjectNearTie || staleTop;
+  };
+
+  const NOW = new Date("2026-07-20T12:00:00Z").getTime();
+
+  it("TC-SUR59: global cross-project runner-up within 3 days flags disambiguation", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(true);
+  });
+
+  it("TC-SUR60: global runner-up from the SAME project does not flag", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "founders-os", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR61: global cross-project runner-up OUTSIDE the near-tie window does not flag", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-10T12:00:00Z" }, // ~9 days back
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR62: a recommended older than 14 days flags disambiguation", () => {
+    const rows = [{ project: "founders-os", created_at: "2026-07-01T12:00:00Z" }]; // 19 days
+    expect(needsDisambiguation(false, rows, NOW)).toBe(true);
+  });
+
+  it("TC-SUR63: a fresh single recommended does not flag", () => {
+    const rows = [{ project: "founders-os", created_at: "2026-07-19T12:00:00Z" }];
+    expect(needsDisambiguation(false, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR64: project scope ignores the cross-project near-tie rule", () => {
+    // Same rows as TC-SUR59 but scoped (isGlobal=false): only staleness can flag,
+    // and the top is fresh, so no disambiguation.
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(false, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR64d: a cross-project runner-up 2 days back is NOT a tie (NEAR_TIE_DAYS=1)", () => {
+    // A clear winner: 1d-old top vs a 2-days-earlier checkpoint on another project.
+    // Under the tightened 1-day window this no longer flags (would have at 3).
+    const rows = [
+      { project: "vouch", created_at: "2026-07-19T12:00:00Z" },
+      { project: "social-circle", created_at: "2026-07-17T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+});
+
+describe("get_last_checkpoint — ask vs answer", () => {
+  // Mirrors: resume + ambiguous + 2+ candidates => conflict; else data.
+  const decide = (
+    intent: "show" | "resume",
+    needsDisambiguation: boolean,
+    candidateCount: number
+  ) =>
+    intent === "resume" && needsDisambiguation && candidateCount >= 2 ? "conflict" : "data";
+
+  it("TC-SUR65: show always answers with data, even when ambiguous", () => {
+    expect(decide("show", true, 3)).toBe("data");
+  });
+
+  it("TC-SUR66: resume with a clear winner answers with data", () => {
+    expect(decide("resume", false, 3)).toBe("data");
+  });
+
+  it("TC-SUR67: resume into ambiguity with 2+ candidates asks (conflict)", () => {
+    expect(decide("resume", true, 3)).toBe("conflict");
+  });
+
+  it("TC-SUR68: resume flagged but only one candidate does not force a pick", () => {
+    expect(decide("resume", true, 1)).toBe("data");
+  });
+});
+
+describe("get_last_checkpoint — no own checkpoints edge", () => {
+  // Mirrors: author='me' with zero rows offers the team-latest but never
+  // auto-substitutes it (found stays false; the offer is a separate field).
+  type Offer = { id: string; created_by: string | null } | null;
+  const buildNone = (author: "me" | "anyone", teamLatest: Offer) => ({
+    found: false,
+    recommended: null as null,
+    team_latest_offer: author === "me" ? teamLatest : null,
+  });
+
+  it("TC-SUR69: no own checkpoints returns found=false with an offer, not a substitution", () => {
+    const r = buildNone("me", { id: "d1", created_by: "doug" });
+    expect(r.found).toBe(false);
+    expect(r.recommended).toBeNull();
+    expect(r.team_latest_offer).toEqual({ id: "d1", created_by: "doug" });
+  });
+
+  it("TC-SUR70: author='anyone' with zero rows carries no offer (search was already team-wide)", () => {
+    const r = buildNone("anyone", { id: "d1", created_by: "doug" });
+    expect(r.team_latest_offer).toBeNull();
+  });
+});
+
+describe("get_last_checkpoint — handoff doc extraction", () => {
+  // Mirrors extractHandoffDoc in surfaces/index.ts: metadata first, then the
+  // standardized session-handoff filename shape, then a label-anchored prose parse.
+  const extractHandoffDoc = (
+    content: string,
+    metadata: Record<string, unknown> | null
+  ): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } => {
+    const metaVal =
+      metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
+    if (metaVal) return { path: metaVal, source: "metadata" };
+    const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
+    if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
+    const label = content.match(
+      /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i
+    );
+    if (label) return { path: label[1], source: "parsed" };
+    return { source: "none" };
+  };
+
+  it("TC-SUR71: structured metadata.handoff_doc takes precedence over the body", () => {
+    const r = extractHandoffDoc(
+      "## Handoff doc path\nother-session-handoff-2026-07-01-01.md",
+      { handoff_doc: "canonical/x-session-handoff-2026-07-20-01.md" }
+    );
+    expect(r.source).toBe("metadata");
+    expect(r.path).toBe("canonical/x-session-handoff-2026-07-20-01.md");
+  });
+
+  it("TC-SUR72: markdown-header footer (path on next line) resolves via the filename convention", () => {
+    const r = extractHandoffDoc(
+      "...body...\n\n## Handoff doc path\nvouch-docs/handoffs/vouch-session-handoff-2026-07-19-01.md",
+      null
+    );
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("vouch-docs/handoffs/vouch-session-handoff-2026-07-19-01.md");
+  });
+
+  it("TC-SUR73: inline 'Handoff doc: <path>' footer also resolves via the convention", () => {
+    const r = extractHandoffDoc(
+      "Handoff doc: founders-os-docs/handoffs/founders-os-session-handoff-2026-07-10-02.md",
+      null
+    );
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("founders-os-docs/handoffs/founders-os-session-handoff-2026-07-10-02.md");
+  });
+
+  it("TC-SUR74: the session-handoff file is picked from among other .md references", () => {
+    const body =
+      "REPO CHANGES: release/release-notes-v1.4.0.md, proposals/checkpoint-procedure.md\n" +
+      "## Handoff doc path\ndocs/marching-maestro-session-handoff-2026-07-14-02.md";
+    const r = extractHandoffDoc(body, null);
+    expect(r.path).toBe("docs/marching-maestro-session-handoff-2026-07-14-02.md");
+    expect(r.path).not.toContain("release-notes");
+  });
+
+  it("TC-SUR75: non-standard handoff name falls back to label parse; nothing yields 'none'", () => {
+    const parsed = extractHandoffDoc("Full handoff: docs/legacy-wrapup-2026-06-15.md", null);
+    expect(parsed.source).toBe("parsed");
+    expect(parsed.path).toBe("docs/legacy-wrapup-2026-06-15.md");
+    const none = extractHandoffDoc("No handoff written this session.", null);
+    expect(none.source).toBe("none");
+    expect(none.path).toBeUndefined();
+  });
+});

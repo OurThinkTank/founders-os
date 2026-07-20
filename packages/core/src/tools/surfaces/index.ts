@@ -17,6 +17,9 @@
 // checkpoint        - end-of-session bookend to get_session_start;
 //   returns the ordered checkpoint procedure + the exact memory
 //   call to make + the previous checkpoint for continuity
+// get_last_checkpoint - retrieve the caller's most recent checkpoint
+//   to show or resume; project-optional (global when omitted),
+//   author-filtered, disambiguates on cross-project near-tie / staleness
 //
 // Pattern A (stateless) - each handler creates its own DB client.
 // ============================================================
@@ -29,6 +32,7 @@ import { getFinancialAccess, financialPermissionError } from "../financial/acces
 import { RENDERING_CONTRACT, RENDERING_CONTRACT_VERSION } from "../../contract.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { conflict } from "../conflict.js";
 
 // Note: getFinancialAccess() (financial/access.js) still reads env vars
 // directly. Its ctx refactor is deferred — see oss-launch-plan.md
@@ -70,6 +74,48 @@ function handoffDocHint(project: string | undefined, today: string, seq = 1): st
   const slug = project ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "session";
   const nn = String(Math.max(1, seq)).padStart(2, "0");
   return `docs/${slug}-session-handoff-${today}-${nn}.md`;
+}
+
+// Disambiguation thresholds for get_last_checkpoint (proposal 2026-07-20:
+// checkpoint-retrieval-semantics.md). A cross-project runner-up within
+// NEAR_TIE_DAYS of the recommended, or a recommended older than STALE_DAYS,
+// makes "your last checkpoint" ambiguous enough to flag. NEAR_TIE_DAYS = 1
+// (tightened from 3 on 2026-07-20): with frequent daily checkpoints a
+// multi-day gap has a clear winner; only a same-window (<=1 day) cross-project
+// pair is a genuine tie.
+const LAST_CHECKPOINT_STALE_DAYS = 14;
+const LAST_CHECKPOINT_NEAR_TIE_DAYS = 1;
+
+// Resolve the handoff-doc pointer for a checkpoint. Reliability across every
+// project and user comes from anchoring on the two things we control, not the
+// prose label a model happened to write (which varies: "Handoff doc:",
+// "## Handoff doc path", "Full handoff:", "Latest handoff doc:", ...):
+//   1. metadata.handoff_doc - the structured field stamped at checkpoint-write
+//      time (once memory_summarize_and_store records it). Phrasing-independent.
+//   2. Filename convention - the checkpoint procedure names every handoff doc
+//      <slug>-session-handoff-YYYY-MM-DD-NN.md, so a token matching
+//      *session-handoff*.md IS the handoff doc regardless of surrounding text,
+//      and is unique among the many .md files a checkpoint body cites. Take the
+//      last match (the handoff line sits near the end and is most specific).
+//   3. Last resort - a label-anchored prose parse for non-standard handoff names.
+// The source is returned so callers can tell how confident the resolution is.
+function extractHandoffDoc(
+  content: string,
+  metadata: Record<string, unknown> | null,
+): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } {
+  const metaVal =
+    metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
+  if (metaVal) return { path: metaVal, source: "metadata" };
+
+  const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
+  if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
+
+  const label = content.match(
+    /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i,
+  );
+  if (label) return { path: label[1], source: "parsed" };
+
+  return { source: "none" };
 }
 
 export const surfaceTools: ToolMap = {
@@ -376,9 +422,10 @@ export const surfaceTools: ToolMap = {
               "responses into a single briefing.",
             format:
               "use time_of_day for the greeting (e.g. 'Good afternoon'). Order " +
-              "sections: overdue and blocked items first, then upcoming work, " +
-              "then recent CRM activity, then feed headlines. Apply the standard " +
-              "color conventions for status emphasis.",
+              "sections: watches that fired while away (the trigger_fires inbox) " +
+              "and unread notifications first, then overdue and blocked items, " +
+              "then upcoming work, then recent CRM activity, then feed headlines. " +
+              "Apply the standard color conventions for status emphasis.",
             forbidden:
               "do not omit any tool from call_these_tools; do not assume morning " +
               "in the greeting (use time_of_day).",
@@ -397,6 +444,8 @@ export const surfaceTools: ToolMap = {
         client_capabilities: resolvedClientCapabilities,
         contract_version: RENDERING_CONTRACT_VERSION,
         call_these_tools: [
+          "list_trigger_fires",
+          "list_notifications",
           "get_task_summary",
           "get_stuck_list",
           "get_dashboard",
@@ -1016,7 +1065,7 @@ export const surfaceTools: ToolMap = {
           {
             step: 4,
             action: "Store the checkpoint record",
-            detail: "Call memory_summarize_and_store using the params in `store_with`. Structure the body with the sections in `store_with.body_sections`.",
+            detail: "Call memory_summarize_and_store using the params in `store_with`. Structure the body with the sections in `store_with.body_sections`. Pass handoff_doc set to the final handoff path (from step 6) so the pointer is stored as structured metadata, not only in the prose.",
           },
           {
             step: 5,
@@ -1035,6 +1084,7 @@ export const surfaceTools: ToolMap = {
             scope,
             project: project ?? "<ask the user>",
             kind: "checkpoint",
+            handoff_doc: "<the handoff doc path you write in step 6>",
             resolution: "confirm",
           },
           body_sections: [
@@ -1045,7 +1095,7 @@ export const surfaceTools: ToolMap = {
             "OPEN / NEXT (carryovers)",
             "Handoff doc path",
           ],
-          note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries.",
+          note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries. Set handoff_doc to the final reconciled handoff path (the same file you write in step 6) so get_last_checkpoint returns it as a structured field instead of parsing it out of the body.",
         },
         handoff_doc_hint: handoffDocHint(project, today, handoff_seq),
         handoff_naming: {
@@ -1231,6 +1281,295 @@ export const surfaceTools: ToolMap = {
           "moved on since each entry was written. If an entry conflicts with what you now " +
           "observe, investigate before trusting it, and correct the memory if you can " +
           "determine the cause.",
+      };
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // get_last_checkpoint
+  // ──────────────────────────────────────────────────────────
+  get_last_checkpoint: {
+    title: "Get Last Checkpoint",
+    description:
+      "Retrieve the caller's most recent checkpoint to show it or resume from it. " +
+      "Call when the user asks to see or pick up their last checkpoint (e.g. 'what " +
+      "was my last checkpoint', 'show me where I left off', 'pick up from my last " +
+      "checkpoint'). Pass project ONLY when there is resolvable context (an active " +
+      "project, a #tag, or a project unambiguously named in the conversation); omit " +
+      "it to search across ALL projects - do not infer a project to fill the gap. " +
+      "author defaults to 'me' (created_by = you); pass 'anyone' only on explicit " +
+      "team wording. intent defaults to 'show' (return the checkpoint to display); " +
+      "pass intent='resume' to pick up the work - on resume into a genuinely " +
+      "ambiguous target the tool returns a conflict to disambiguate rather than " +
+      "guessing. Response includes a render field with tiered rendering guidance - " +
+      "check it before composing your reply.",
+    parameters: z.object({
+      project: z
+        .string()
+        .optional()
+        .describe(
+          "Project tag (e.g. 'founders-os'). Pass ONLY with resolvable context; omit " +
+          "for a global, cross-project search. Never infer a project to fill a gap."
+        ),
+      author: z
+        .enum(["me", "anyone"])
+        .optional()
+        .describe(
+          "Whose checkpoints to consider. 'me' (default) = your own (created_by = you). " +
+          "'anyone' = the whole team's; use only on explicit team wording ('the team', " +
+          "'org', 'me and Doug', a named teammate). 'we'/'us' said to you stay 'me'."
+        ),
+      intent: z
+        .enum(["show", "resume"])
+        .optional()
+        .describe(
+          "'show' (default) returns the checkpoint to display. 'resume' returns it to " +
+          "pick up work, but returns a disambiguation conflict when the target is " +
+          "ambiguous. Read the user's verb: 'show me'/'what is/was' = show; " +
+          "'pick up'/'continue'/'resume'/'where do I start' = resume."
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe("Max ranked candidates to return (1-10). Defaults to 5."),
+    }),
+    handler: async (ctx: ToolContext, {
+      project,
+      author = "me",
+      intent = "show",
+      limit = 5,
+    }: {
+      project?: string;
+      author?: "me" | "anyone";
+      intent?: "show" | "resume";
+      limit?: number;
+    }) => {
+      const isGlobal = !project;
+      const nowMs = Date.now();
+      const ageDays = (ts: string): number =>
+        Math.floor((nowMs - new Date(ts).getTime()) / 86_400_000);
+      const daysBetween = (a: string, b: string): number =>
+        Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
+      const excerpt = (text: string): string => {
+        const firstLine = text.split("\n")[0].trim();
+        return firstLine.length > 120 ? firstLine.slice(0, 117) + "..." : firstLine;
+      };
+
+      // Query the caller's checkpoints. project omitted => global (cross-project).
+      // Mirrors get_project_history / previous_checkpoint scoping: org rows carry
+      // user_id='org', personal carry the caller's id, and created_by is the real
+      // author on both, so author='me' isolates the caller's own thread.
+      let q = ctx.db
+        .from("memories")
+        .select("id, project, content, created_at, created_by, metadata")
+        .eq("company_id", ctx.companyId)
+        .eq("metadata->>kind", "checkpoint")
+        .or(`user_id.eq.${ctx.userId},user_id.eq.org`);
+      if (project) q = q.eq("project", project);
+      if (author === "me") q = q.eq("created_by", ctx.userId);
+
+      const { data, error } = await q
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (error) throw new Error(`Failed to load checkpoints: ${error.message}`);
+
+      const rows = (data ?? []) as Array<{
+        id: string;
+        project: string | null;
+        content: string;
+        created_at: string;
+        created_by: string | null;
+        metadata: Record<string, unknown> | null;
+      }>;
+
+      const scopeLabel = isGlobal ? "global" : project!;
+
+      // No checkpoints of the caller's own. Offer the team-latest (a cheap
+      // author='anyone' lookup) as an explicit next step rather than
+      // auto-substituting a teammate's thread.
+      if (rows.length === 0) {
+        let team_latest_offer:
+          | { id: string; project: string | null; created_by: string | null; created_at: string; age_days: number }
+          | null = null;
+        if (author === "me") {
+          let tq = ctx.db
+            .from("memories")
+            .select("id, project, created_at, created_by")
+            .eq("company_id", ctx.companyId)
+            .eq("metadata->>kind", "checkpoint")
+            .or(`user_id.eq.${ctx.userId},user_id.eq.org`);
+          if (project) tq = tq.eq("project", project);
+          const { data: teamData } = await tq
+            .order("created_at", { ascending: false })
+            .limit(1);
+          const t = (teamData ?? [])[0] as
+            | { id: string; project: string | null; created_at: string; created_by: string | null }
+            | undefined;
+          if (t) {
+            team_latest_offer = {
+              id: t.id,
+              project: t.project,
+              created_by: t.created_by,
+              created_at: t.created_at,
+              age_days: ageDays(t.created_at),
+            };
+          }
+        }
+        const message = team_latest_offer
+          ? `No checkpoints of your own${project ? ` for "${project}"` : ""}. The team's most ` +
+            `recent is by ${team_latest_offer.created_by ?? "a teammate"} on ` +
+            `${team_latest_offer.created_at.slice(0, 10)}` +
+            `${team_latest_offer.project ? ` (${team_latest_offer.project})` : ""}. ` +
+            `Pass author='anyone' to load it.`
+          : `No checkpoints found${project ? ` for "${project}"` : ""}.`;
+        const noneRender: Render = {
+          tier_1: {
+            format_hint: "status_groups",
+            instructions: {
+              scope:
+                "state the `message` plainly; if team_latest_offer is present, mention it " +
+                "as the single next step.",
+              format: "a short line; no table or widget for an empty result.",
+              forbidden: "do not auto-load team_latest_offer; do not invent checkpoints.",
+            },
+          },
+          tier_3: { markdown: message },
+          do_not: [
+            "Do not invent new color meanings; use the standard color conventions.",
+          ],
+        };
+        return {
+          found: false,
+          scope: scopeLabel,
+          recommended: null,
+          candidates: [],
+          needs_disambiguation: false,
+          team_latest_offer,
+          message,
+          render: noneRender,
+        };
+      }
+
+      const top = rows[0];
+      const runnerUp = rows[1];
+
+      const candidates = rows.slice(0, limit).map((r) => ({
+        id: r.id,
+        project: r.project,
+        created_by: r.created_by,
+        created_at: r.created_at,
+        age_days: ageDays(r.created_at),
+        excerpt: excerpt(r.content),
+      }));
+
+      // needs_disambiguation: the recommended (newest) is not clearly the one the
+      // user meant. (a) global scope and the runner-up is a DIFFERENT project within
+      // NEAR_TIE_DAYS of the recommended (a genuine cross-project near-tie), or
+      // (b) the recommended is older than STALE_DAYS, so "last" is stale enough that
+      // the intent is questionable.
+      const crossProjectNearTie =
+        isGlobal &&
+        !!runnerUp &&
+        runnerUp.project !== top.project &&
+        daysBetween(top.created_at, runnerUp.created_at) <= LAST_CHECKPOINT_NEAR_TIE_DAYS;
+      const staleTop = ageDays(top.created_at) > LAST_CHECKPOINT_STALE_DAYS;
+      const needs_disambiguation = crossProjectNearTie || staleTop;
+
+      // Ask vs answer, keyed on intent. resume into real ambiguity with 2+ real
+      // candidates => stop and let the user pick (a wrong resume is costly). show,
+      // or resume with a clear winner => return the data (a wrong display is cheap).
+      if (intent === "resume" && needs_disambiguation && candidates.length >= 2) {
+        return conflict(
+          "partial_match",
+          "More than one checkpoint could be the one to resume. Pick which to pick up from.",
+          candidates.map((c) => ({
+            key: c.id,
+            label:
+              `${c.project ?? "(no project)"} - ${c.created_at.slice(0, 10)} ` +
+              `(${c.age_days}d ago): ${c.excerpt}`,
+            value: { id: c.id, project: c.project },
+          })),
+          {
+            scope: scopeLabel,
+            reason: crossProjectNearTie ? "cross_project_near_tie" : "stale_recommended",
+          }
+        );
+      }
+
+      // Handoff-doc pointer, resolved by precedence: structured metadata, then the
+      // standardized session-handoff filename shape, then a label-anchored parse.
+      const handoff = extractHandoffDoc(top.content, top.metadata);
+
+      const recommended = {
+        id: top.id,
+        project: top.project,
+        created_by: top.created_by,
+        created_at: top.created_at,
+        age_days: ageDays(top.created_at),
+        content: top.content,
+        ...(handoff.path ? { handoff_doc: handoff.path } : {}),
+        handoff_doc_source: handoff.source,
+      };
+
+      // tier_3 markdown: recommended headline + content, then a compact alternatives table.
+      const others = candidates.filter((c) => c.id !== top.id);
+      const othersTable = others.length
+        ? `\n\nOther recent checkpoints:\n\n| Date | Project | Entry |\n|------|---------|-------|\n` +
+          others
+            .map(
+              (c) =>
+                `| ${c.created_at.slice(0, 10)} | ${c.project ?? "-"} | ${c.excerpt.replace(/\|/g, "\\|")} |`
+            )
+            .join("\n")
+        : "";
+      const markdown =
+        `**Last checkpoint** - ${top.project ?? "(no project)"} - ` +
+        `${top.created_at.slice(0, 10)} (${ageDays(top.created_at)}d ago)\n\n` +
+        top.content +
+        othersTable;
+
+      const render: Render = {
+        tier_1: {
+          format_hint: "timeline",
+          instructions: {
+            scope:
+              "render `recommended` as the primary checkpoint (show its full content), then " +
+              "list the other `candidates` beneath as recent alternatives. Surface " +
+              "recommended.project, recommended.created_at, and recommended.age_days in the header.",
+            format:
+              "lead with the recommended checkpoint's project, date, and age, then its content " +
+              "as the body. Show other candidates as a compact dated list, each a one-line " +
+              "excerpt with a project chip. When needs_disambiguation is true, lead with the " +
+              "candidate list so the user can pick rather than burying it.",
+            forbidden:
+              "do not resume or act on the checkpoint when intent is 'show'; do not reorder " +
+              "candidates by another field; do not omit age_days.",
+          },
+        },
+        tier_3: { markdown },
+        do_not: [
+          "Do not invent new color meanings; use the standard color conventions.",
+          "For a single checkpoint with no alternatives, inline rendering is fine.",
+        ],
+      };
+
+      return {
+        found: true,
+        scope: scopeLabel,
+        intent,
+        recommended,
+        candidates,
+        needs_disambiguation,
+        resume_ready: intent === "resume",
+        render,
+        guidance:
+          "Point-in-time snapshot; repos, tasks, and current state may have moved on since it " +
+          "was written. If intent is 'show', display it and mention the alternatives; do not " +
+          "resume. If intent is 'resume', adopt the recommended as working context and pull its " +
+          "handoff_doc. If an entry conflicts with what you now observe, investigate first.",
       };
     },
   },

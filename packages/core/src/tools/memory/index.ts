@@ -133,6 +133,14 @@ export const memoryTools: ToolMap = {
           "Optional classifier stored in metadata.kind (e.g. 'checkpoint', 'decision', 'fact'). " +
           "Used by get_project_history to build a typed timeline."
         ),
+      handoff_doc: z
+        .string()
+        .optional()
+        .describe(
+          "Optional path to a session handoff doc, stored in metadata.handoff_doc " +
+          "(e.g. 'docs/<project>-session-handoff-YYYY-MM-DD-NN.md'). Pass it with a checkpoint " +
+          "so get_last_checkpoint returns the pointer without parsing it out of the body."
+        ),
       resolution: z
         .enum(["confirm", "cancel"])
         .optional()
@@ -142,12 +150,13 @@ export const memoryTools: ToolMap = {
         .optional()
         .describe("Deprecated: use `resolution: \"confirm\"`. Set true to skip near-duplicate detection."),
     }),
-    handler: async (ctx: ToolContext, { content, scope, project, source_tool, kind, force, resolution }: {
+    handler: async (ctx: ToolContext, { content, scope, project, source_tool, kind, handoff_doc, force, resolution }: {
       content: string;
       scope: "org" | "personal";
       project?: string;
       source_tool?: string;
       kind?: string;
+      handoff_doc?: string;
       force?: boolean;
       resolution?: "confirm" | "cancel";
     }) => {
@@ -167,6 +176,13 @@ export const memoryTools: ToolMap = {
         if (dupConflict) return dupConflict;
       }
 
+      // metadata carries optional classifiers: kind (typed timeline) and
+      // handoff_doc (structured pointer to the session handoff file, so readers
+      // like get_last_checkpoint never parse it out of the prose).
+      const metadata: Record<string, unknown> = {};
+      if (kind) metadata.kind = kind;
+      if (handoff_doc) metadata.handoff_doc = handoff_doc;
+
       const { data, error } = await ctx.db
         .from("memories")
         .insert({
@@ -178,7 +194,7 @@ export const memoryTools: ToolMap = {
           content,
           embedding: JSON.stringify(embedding),
           source_tool: source_tool ?? null,
-          ...(kind ? { metadata: { kind } } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         })
         .select("id, user_id, scope, project, content, created_at")
         .single();
@@ -564,6 +580,15 @@ export const memoryTools: ToolMap = {
           "Optional classifier stored in metadata.kind. Pass 'checkpoint' for end-of-session " +
           "checkpoints so get_project_history can build the project timeline."
         ),
+      handoff_doc: z
+        .string()
+        .optional()
+        .describe(
+          "Path to the session handoff doc, stored in metadata.handoff_doc. When storing a " +
+          "checkpoint, pass the final reconciled handoff path (e.g. " +
+          "'docs/<project>-session-handoff-YYYY-MM-DD-NN.md') so get_last_checkpoint returns it " +
+          "without parsing the body."
+        ),
       resolution: z
         .enum(["confirm", "cancel"])
         .optional()
@@ -573,11 +598,12 @@ export const memoryTools: ToolMap = {
         .optional()
         .describe("Deprecated: use `resolution: \"confirm\"`. Set true to skip near-duplicate detection."),
     }),
-    handler: async (ctx: ToolContext, { session_summary, scope, project, kind, force, resolution }: {
+    handler: async (ctx: ToolContext, { session_summary, scope, project, kind, handoff_doc, force, resolution }: {
       session_summary: string;
       scope: "org" | "personal";
       project?: string;
       kind?: string;
+      handoff_doc?: string;
       force?: boolean;
       resolution?: "confirm" | "cancel";
     }) => {
@@ -597,6 +623,13 @@ export const memoryTools: ToolMap = {
         if (dupConflict) return dupConflict;
       }
 
+      // metadata carries optional classifiers: kind (typed timeline) and
+      // handoff_doc (structured pointer to the session handoff file, so readers
+      // like get_last_checkpoint never parse it out of the prose).
+      const metadata: Record<string, unknown> = {};
+      if (kind) metadata.kind = kind;
+      if (handoff_doc) metadata.handoff_doc = handoff_doc;
+
       const { data, error } = await ctx.db
         .from("memories")
         .insert({
@@ -608,7 +641,7 @@ export const memoryTools: ToolMap = {
           content: session_summary,
           embedding: JSON.stringify(embedding),
           source_tool: "memory_summarize_and_store",
-          ...(kind ? { metadata: { kind } } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         })
         .select("id, user_id, scope, project, content, created_at")
         .single();
