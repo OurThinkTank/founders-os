@@ -1217,3 +1217,59 @@ describe("memory hygiene codification — recall shape + change_reason", () => {
     expect(audit?.metadata).toBeNull();
   });
 });
+
+// ── 1j. handoff_doc -> metadata.handoff_doc write path ───────
+// The durable half of the get_last_checkpoint handoff fix: the checkpoint
+// write records the handoff path as structured metadata so readers never parse.
+
+describe("checkpoint write-path — handoff_doc lands in metadata", () => {
+  it("TC-MEM95: memory_summarize_and_store writes metadata.handoff_doc alongside kind", async () => {
+    const { memoryTools } = await import("../tools/memory/index.js");
+    await memoryTools.memory_summarize_and_store.handler(mockCtx, {
+      session_summary: "checkpoint body",
+      scope: "org",
+      project: "founders-os",
+      kind: "checkpoint",
+      handoff_doc: "docs/founders-os-session-handoff-2026-07-20-01.md",
+      resolution: "confirm",
+    });
+    const meta = mockInsertArgs.captured["memories"]?.metadata as Record<string, unknown> | undefined;
+    expect(meta).toEqual({
+      kind: "checkpoint",
+      handoff_doc: "docs/founders-os-session-handoff-2026-07-20-01.md",
+    });
+  });
+
+  it("TC-MEM96: memory_store writes metadata.handoff_doc when provided", async () => {
+    const { memoryTools } = await import("../tools/memory/index.js");
+    await memoryTools.memory_store.handler(mockCtx, {
+      content: "checkpoint body",
+      scope: "org",
+      kind: "checkpoint",
+      handoff_doc: "docs/x-session-handoff-2026-07-20-02.md",
+      resolution: "confirm",
+    });
+    const meta = mockInsertArgs.captured["memories"]?.metadata as Record<string, unknown> | undefined;
+    expect(meta?.handoff_doc).toBe("docs/x-session-handoff-2026-07-20-02.md");
+  });
+
+  it("TC-MEM97: no kind and no handoff_doc omits metadata entirely (unchanged behavior)", async () => {
+    const { memoryTools } = await import("../tools/memory/index.js");
+    await memoryTools.memory_store.handler(mockCtx, {
+      content: "plain memory",
+      scope: "personal",
+    });
+    expect(mockInsertArgs.captured["memories"]?.metadata).toBeUndefined();
+  });
+
+  it("TC-MEM98: handoff_doc without kind writes metadata.handoff_doc only", async () => {
+    const { memoryTools } = await import("../tools/memory/index.js");
+    await memoryTools.memory_store.handler(mockCtx, {
+      content: "note",
+      scope: "personal",
+      handoff_doc: "docs/y-session-handoff-2026-07-20-01.md",
+    });
+    const meta = mockInsertArgs.captured["memories"]?.metadata as Record<string, unknown> | undefined;
+    expect(meta).toEqual({ handoff_doc: "docs/y-session-handoff-2026-07-20-01.md" });
+  });
+});
