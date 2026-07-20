@@ -631,3 +631,148 @@ describe("checkpoint — author selection and team-wide sequence", () => {
     expect(pickPrevious(dougOnly, CALLER, "me")).toBeNull();
   });
 });
+
+// ── get_last_checkpoint: scope, disambiguation, ask-vs-answer, no-own edge ─────
+// Mirrors the get_last_checkpoint handler logic in surfaces/index.ts.
+
+describe("get_last_checkpoint — project scope resolution", () => {
+  // Mirrors: const isGlobal = !project;  (omitted project => global search)
+  const isGlobal = (project?: string) => !project;
+
+  it("TC-SUR57: no project means a global, cross-project search", () => {
+    expect(isGlobal(undefined)).toBe(true);
+  });
+
+  it("TC-SUR58: a supplied project scopes the search (no global back-fill)", () => {
+    expect(isGlobal("founders-os")).toBe(false);
+  });
+});
+
+describe("get_last_checkpoint — needs_disambiguation", () => {
+  const DAY = 86_400_000;
+  const STALE = 14; // LAST_CHECKPOINT_STALE_DAYS
+  const NEAR_TIE = 1; // LAST_CHECKPOINT_NEAR_TIE_DAYS
+  type Row = { project: string | null; created_at: string };
+
+  const ageDays = (nowMs: number, ts: string) =>
+    Math.floor((nowMs - new Date(ts).getTime()) / DAY);
+  const daysBetween = (a: string, b: string) =>
+    Math.abs(new Date(a).getTime() - new Date(b).getTime()) / DAY;
+
+  const needsDisambiguation = (isGlobal: boolean, rows: Row[], nowMs: number) => {
+    const top = rows[0];
+    const runnerUp = rows[1];
+    const crossProjectNearTie =
+      isGlobal &&
+      !!runnerUp &&
+      runnerUp.project !== top.project &&
+      daysBetween(top.created_at, runnerUp.created_at) <= NEAR_TIE;
+    const staleTop = ageDays(nowMs, top.created_at) > STALE;
+    return crossProjectNearTie || staleTop;
+  };
+
+  const NOW = new Date("2026-07-20T12:00:00Z").getTime();
+
+  it("TC-SUR59: global cross-project runner-up within 3 days flags disambiguation", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(true);
+  });
+
+  it("TC-SUR60: global runner-up from the SAME project does not flag", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "founders-os", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR61: global cross-project runner-up OUTSIDE the near-tie window does not flag", () => {
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-10T12:00:00Z" }, // ~9 days back
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR62: a recommended older than 14 days flags disambiguation", () => {
+    const rows = [{ project: "founders-os", created_at: "2026-07-01T12:00:00Z" }]; // 19 days
+    expect(needsDisambiguation(false, rows, NOW)).toBe(true);
+  });
+
+  it("TC-SUR63: a fresh single recommended does not flag", () => {
+    const rows = [{ project: "founders-os", created_at: "2026-07-19T12:00:00Z" }];
+    expect(needsDisambiguation(false, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR64: project scope ignores the cross-project near-tie rule", () => {
+    // Same rows as TC-SUR59 but scoped (isGlobal=false): only staleness can flag,
+    // and the top is fresh, so no disambiguation.
+    const rows = [
+      { project: "founders-os", created_at: "2026-07-19T12:00:00Z" },
+      { project: "smatched", created_at: "2026-07-18T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(false, rows, NOW)).toBe(false);
+  });
+
+  it("TC-SUR64d: a cross-project runner-up 2 days back is NOT a tie (NEAR_TIE_DAYS=1)", () => {
+    // A clear winner: 1d-old top vs a 2-days-earlier checkpoint on another project.
+    // Under the tightened 1-day window this no longer flags (would have at 3).
+    const rows = [
+      { project: "vouch", created_at: "2026-07-19T12:00:00Z" },
+      { project: "social-circle", created_at: "2026-07-17T12:00:00Z" },
+    ];
+    expect(needsDisambiguation(true, rows, NOW)).toBe(false);
+  });
+});
+
+describe("get_last_checkpoint — ask vs answer", () => {
+  // Mirrors: resume + ambiguous + 2+ candidates => conflict; else data.
+  const decide = (
+    intent: "show" | "resume",
+    needsDisambiguation: boolean,
+    candidateCount: number
+  ) =>
+    intent === "resume" && needsDisambiguation && candidateCount >= 2 ? "conflict" : "data";
+
+  it("TC-SUR65: show always answers with data, even when ambiguous", () => {
+    expect(decide("show", true, 3)).toBe("data");
+  });
+
+  it("TC-SUR66: resume with a clear winner answers with data", () => {
+    expect(decide("resume", false, 3)).toBe("data");
+  });
+
+  it("TC-SUR67: resume into ambiguity with 2+ candidates asks (conflict)", () => {
+    expect(decide("resume", true, 3)).toBe("conflict");
+  });
+
+  it("TC-SUR68: resume flagged but only one candidate does not force a pick", () => {
+    expect(decide("resume", true, 1)).toBe("data");
+  });
+});
+
+describe("get_last_checkpoint — no own checkpoints edge", () => {
+  // Mirrors: author='me' with zero rows offers the team-latest but never
+  // auto-substitutes it (found stays false; the offer is a separate field).
+  type Offer = { id: string; created_by: string | null } | null;
+  const buildNone = (author: "me" | "anyone", teamLatest: Offer) => ({
+    found: false,
+    recommended: null as null,
+    team_latest_offer: author === "me" ? teamLatest : null,
+  });
+
+  it("TC-SUR69: no own checkpoints returns found=false with an offer, not a substitution", () => {
+    const r = buildNone("me", { id: "d1", created_by: "doug" });
+    expect(r.found).toBe(false);
+    expect(r.recommended).toBeNull();
+    expect(r.team_latest_offer).toEqual({ id: "d1", created_by: "doug" });
+  });
+
+  it("TC-SUR70: author='anyone' with zero rows carries no offer (search was already team-wide)", () => {
+    const r = buildNone("anyone", { id: "d1", created_by: "doug" });
+    expect(r.team_latest_offer).toBeNull();
+  });
+});

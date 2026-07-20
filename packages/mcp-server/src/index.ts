@@ -179,6 +179,8 @@ SURFACES: Call get_session_start at session open for full orientation across all
 domains. Use get_entity_card for a complete picture of any customer, contact, or
 transaction. get_weekly_retro for completed-task reviews. get_stuck_list for stuck work.
 get_project_history for a project's chronological checkpoint timeline.
+get_last_checkpoint to show or resume the caller's most recent checkpoint
+(project-optional; global when omitted).
 
 CHECKPOINT: When the user says "checkpoint", "let's checkpoint", or "wrap up this
 session", call the checkpoint tool (the end-of-session bookend to get_session_start).
@@ -190,6 +192,20 @@ per-day sequence (-NN, e.g. -01, -02); use handoff_doc_hint, but if docs for
 today already exist in the target folder use the next number after the highest.
 Follow the returned steps; review the previous_checkpoint it returns to carry
 forward unfinished OPEN/NEXT items.
+
+LAST CHECKPOINT: When the user asks to see or resume "my last checkpoint" (e.g.
+"what was my last checkpoint", "show me where I left off", "pick up from my last
+checkpoint"), call get_last_checkpoint. Pass project ONLY when there is resolvable
+context - an active project, a #tag, or a project unambiguously named in the
+conversation; otherwise omit it so the tool searches across all projects, and
+never infer a project to fill the gap. author defaults to "me" (your own thread);
+pass "anyone" only on explicit team wording ("the team", "org", "me and Doug", a
+named teammate) - "we"/"us" said to you mean you plus the agent and stay "me".
+Read the verb for intent: "show me"/"what is"/"what was" DISPLAY the checkpoint
+(intent="show", the default) and never resume; "pick up from"/"continue"/"resume"/
+"where do I start" RESUME it (intent="resume"). On resume into a genuinely
+ambiguous target the tool returns a conflict to disambiguate - present the choices
+and do not auto-pick.
 
 MEMORY: Recalled memories can go stale as the world changes, so a stored memory
 may conflict with what you now observe. When that happens, do not blindly trust
