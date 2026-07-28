@@ -107,8 +107,11 @@ const LAST_CHECKPOINT_NEAR_TIE_DAYS = 1;
 //   2. Filename convention - the checkpoint procedure names every handoff doc
 //      <slug>-session-handoff-YYYY-MM-DD-NN.md, so a token matching
 //      *session-handoff*.md IS the handoff doc regardless of surrounding text,
-//      and is unique among the many .md files a checkpoint body cites. Take the
-//      last match (the handoff line sits near the end and is most specific).
+//      and is unique among the many .md files a checkpoint body cites. A body
+//      can cite MORE than one of them though (a superseded session, a "see
+//      also"), so taking the last match blindly can return a neighbouring
+//      session's doc. Prefer a match that is actually labelled as the handoff,
+//      and fall back to the last match only when nothing is labelled.
 //   3. Last resort - a label-anchored prose parse for non-standard handoff names.
 // The source is returned so callers can tell how confident the resolution is.
 export function extractHandoffDoc(
@@ -119,8 +122,27 @@ export function extractHandoffDoc(
     metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
   if (metaVal) return { path: metaVal, source: "metadata" };
 
-  const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
-  if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
+  // A line "labels" a path when, after removing the path tokens themselves,
+  // the remaining words still mention a handoff - so "Handoff doc: <path>" and
+  // the markdown "## Handoff doc path" header (value on the next line) both
+  // count, while "supersedes <other>-session-handoff-...md" does not.
+  const labelled: string[] = [];
+  const all: string[] = [];
+  let prevWasLabelOnly = false;
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue; // blank lines must not break a header/value pair
+    const hits = line.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
+    const residue = line.replace(/[^\s()]*session-handoff[^\s()]*\.md/g, "");
+    const hasLabel = /handoff/i.test(residue);
+    if (hits) {
+      all.push(...hits);
+      if (hasLabel || prevWasLabelOnly) labelled.push(...hits);
+    }
+    prevWasLabelOnly = hasLabel && !hits;
+  }
+  const conv = labelled.length > 0 ? labelled : all;
+  if (conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
 
   const label = content.match(
     /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i,

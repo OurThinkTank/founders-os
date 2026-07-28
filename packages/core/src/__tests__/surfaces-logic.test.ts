@@ -820,6 +820,37 @@ describe("get_last_checkpoint — handoff doc extraction", () => {
     expect(r.path).toBe("founders-os-docs/handoffs/founders-os-session-handoff-2026-07-10-02.md");
   });
 
+  it("TC-SUR75b: a labelled path wins over a later unlabelled mention", () => {
+    // The failure this guards: a checkpoint names its own handoff, then later
+    // cites a PREVIOUS session's doc in prose. Last-match-wins returned the
+    // previous session's file and silently pointed the next session backwards.
+    const body =
+      "## Handoff doc path\ncircle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md\n" +
+      "NOTES: supersedes circle-docs/handoffs/social-circle-session-handoff-2026-07-16-03.md";
+    const r = extractHandoffDoc(body, null);
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md");
+  });
+
+  it("TC-SUR75c: with several labelled mentions the last labelled one wins", () => {
+    const body =
+      "Handoff doc: handoffs/x-session-handoff-2026-07-27-01.md\n" +
+      "...body...\n" +
+      "Handoff doc path: handoffs/x-session-handoff-2026-07-27-02.md";
+    expect(extractHandoffDoc(body, null).path).toBe(
+      "handoffs/x-session-handoff-2026-07-27-02.md"
+    );
+  });
+
+  it("TC-SUR75d: with nothing labelled it still falls back to the last match", () => {
+    const body =
+      "see handoffs/x-session-handoff-2026-07-01-01.md and " +
+      "handoffs/x-session-handoff-2026-07-02-01.md";
+    const r = extractHandoffDoc(body, null);
+    expect(r.source).toBe("convention");
+    expect(r.path).toBe("handoffs/x-session-handoff-2026-07-02-01.md");
+  });
+
   it("TC-SUR74: the session-handoff file is picked from among other .md references", () => {
     const body =
       "REPO CHANGES: release/release-notes-v1.4.0.md, proposals/checkpoint-procedure.md\n" +
