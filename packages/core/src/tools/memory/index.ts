@@ -106,6 +106,57 @@ async function checkForDuplicate(
   );
 }
 
+// A checkpoint is only useful to a later session if it carries a resolvable
+// pointer to its handoff doc: get_last_checkpoint returns it as a structured
+// field, and the checkpoint tool reads the folder off it to keep the next
+// session in the right place. Nothing else in the system notices when that
+// pointer is missing or malformed, so the drift stays invisible until someone
+// trips over it (see the 2026-07-27 ritual-drift incident). Say it here, at
+// the one moment it is cheap to fix.
+type CheckpointWarning = { code: string; message: string; severity: "warning" };
+
+export function checkpointWarnings(
+  kind: string | undefined,
+  handoff_doc: string | undefined,
+  tool: "memory_store" | "memory_summarize_and_store",
+): CheckpointWarning[] {
+  if (kind !== "checkpoint") return [];
+  const warnings: CheckpointWarning[] = [];
+
+  if (tool === "memory_store") {
+    warnings.push({
+      code: "checkpoint_wrong_store_tool",
+      message:
+        "Checkpoints should be stored with memory_summarize_and_store, not memory_store - " +
+        "the checkpoint tool's store_with block names it explicitly. memory_store still works, " +
+        "but it is a signal the checkpoint procedure was reconstructed rather than followed.",
+      severity: "warning",
+    });
+  }
+
+  if (!handoff_doc) {
+    warnings.push({
+      code: "checkpoint_missing_handoff_doc",
+      message:
+        "Checkpoint stored without a handoff_doc pointer. get_last_checkpoint will fall back to " +
+        "parsing the path out of the prose, and the next checkpoint cannot learn which folder this " +
+        "project keeps handoff docs in. Pass handoff_doc set to the final handoff path.",
+      severity: "warning",
+    });
+  } else if (!handoff_doc.includes("session-handoff")) {
+    warnings.push({
+      code: "checkpoint_handoff_doc_non_canonical",
+      message:
+        `handoff_doc '${handoff_doc}' does not match the <project>-session-handoff-YYYY-MM-DD-NN.md ` +
+        "convention, so it will not be recognised by filename and will not teach the handoff folder " +
+        "forward. Rename it or pass the canonical path.",
+      severity: "warning",
+    });
+  }
+
+  return warnings;
+}
+
 export const memoryTools: ToolMap = {
   memory_store: {
     title: "Memory Store",
@@ -138,7 +189,7 @@ export const memoryTools: ToolMap = {
         .optional()
         .describe(
           "Optional path to a session handoff doc, stored in metadata.handoff_doc " +
-          "(e.g. 'docs/<project>-session-handoff-YYYY-MM-DD-NN.md'). Pass it with a checkpoint " +
+          "(e.g. 'handoffs/<project>-session-handoff-YYYY-MM-DD-NN.md'). Pass it with a checkpoint " +
           "so get_last_checkpoint returns the pointer without parsing it out of the body."
         ),
       resolution: z
@@ -216,7 +267,8 @@ export const memoryTools: ToolMap = {
         });
       }
 
-      return data;
+      const warnings = checkpointWarnings(kind, handoff_doc, "memory_store");
+      return warnings.length > 0 ? { ...(data as object), warnings } : data;
     },
   },
 
@@ -586,7 +638,7 @@ export const memoryTools: ToolMap = {
         .describe(
           "Path to the session handoff doc, stored in metadata.handoff_doc. When storing a " +
           "checkpoint, pass the final reconciled handoff path (e.g. " +
-          "'docs/<project>-session-handoff-YYYY-MM-DD-NN.md') so get_last_checkpoint returns it " +
+          "'handoffs/<project>-session-handoff-YYYY-MM-DD-NN.md') so get_last_checkpoint returns it " +
           "without parsing the body."
         ),
       resolution: z
@@ -664,7 +716,8 @@ export const memoryTools: ToolMap = {
         });
       }
 
-      return data;
+      const warnings = checkpointWarnings(kind, handoff_doc, "memory_summarize_and_store");
+      return warnings.length > 0 ? { ...(data as object), warnings } : data;
     },
   },
 };
