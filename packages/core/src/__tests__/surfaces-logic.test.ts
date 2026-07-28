@@ -5,6 +5,16 @@
 // No real DB required. Pure logic tests.
 // ============================================================
 import { describe, it, expect, vi } from "vitest";
+// These three describes exercise the SHIPPING helpers rather than local copies.
+// The rest of this file still mirrors its logic inline; converting those is a
+// separate pass. Anything imported here is covered for real.
+import {
+  DEFAULT_HANDOFF_FOLDER,
+  handoffDocHint,
+  extractHandoffDoc,
+  deriveHandoffFolder,
+  nextHandoffSeq,
+} from "../tools/surfaces/index.js";
 
 // ── get_weekly_retro: Monday boundary calculation ────────────────────────────
 // Mirrors the week-boundary logic in surfaces/index.ts get_weekly_retro handler.
@@ -513,54 +523,59 @@ describe("get_project_history — timeline markdown", () => {
 });
 
 // ── checkpoint: handoff-doc slug + procedure shape ───────────────────────────
-// Mirrors handoffDocHint() and the store_with block in surfaces/index.ts.
+// handoffDocHint is imported from source; the store_with block below is mirrored.
 
 describe("checkpoint — handoff doc hint", () => {
-  const handoffDocHint = (
-    project: string | undefined,
-    today: string,
-    seq = 1
-  ): string => {
-    const slug = project
-      ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-      : "session";
-    const nn = String(Math.max(1, seq)).padStart(2, "0");
-    return `docs/${slug}-session-handoff-${today}-${nn}.md`;
-  };
-
   it("TC-SUR46: builds a slugified path from the project tag", () => {
     expect(handoffDocHint("marching-maestro", "2026-06-17")).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
+      "handoffs/marching-maestro-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR47: normalizes casing and spaces to a clean slug", () => {
     expect(handoffDocHint("Marching Maestro", "2026-06-17")).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
+      "handoffs/marching-maestro-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR48: falls back to 'session' when no project is given", () => {
     expect(handoffDocHint(undefined, "2026-06-17")).toBe(
-      "docs/session-session-handoff-2026-06-17-01.md"
+      "handoffs/session-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR49: strips leading/trailing separators from messy tags", () => {
     expect(handoffDocHint("__TalkDoc__", "2026-06-17")).toBe(
-      "docs/talkdoc-session-handoff-2026-06-17-01.md"
+      "handoffs/talkdoc-session-handoff-2026-06-17-01.md"
     );
   });
 
   it("TC-SUR49b: zero-pads a later per-day sequence number", () => {
     expect(handoffDocHint("marching-maestro", "2026-06-17", 3)).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17-03.md"
+      "handoffs/marching-maestro-session-handoff-2026-06-17-03.md"
     );
   });
 
   it("TC-SUR49c: clamps a non-positive sequence to 01", () => {
     expect(handoffDocHint("marching-maestro", "2026-06-17", 0)).toBe(
-      "docs/marching-maestro-session-handoff-2026-06-17-01.md"
+      "handoffs/marching-maestro-session-handoff-2026-06-17-01.md"
+    );
+  });
+  it("TC-SUR49d: an explicit folder overrides the default", () => {
+    expect(
+      handoffDocHint("social-circle", "2026-07-27", 4, "circle-docs/handoffs")
+    ).toBe("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-04.md");
+  });
+
+  it("TC-SUR49e: a trailing slash on the folder does not double up", () => {
+    expect(handoffDocHint("social-circle", "2026-07-27", 1, "circle-docs/handoffs/")).toBe(
+      "circle-docs/handoffs/social-circle-session-handoff-2026-07-27-01.md"
+    );
+  });
+
+  it("TC-SUR49f: an empty folder falls back to the default rather than a bare path", () => {
+    expect(handoffDocHint("social-circle", "2026-07-27", 1, "")).toBe(
+      "handoffs/social-circle-session-handoff-2026-07-27-01.md"
     );
   });
 });
@@ -778,24 +793,6 @@ describe("get_last_checkpoint — no own checkpoints edge", () => {
 });
 
 describe("get_last_checkpoint — handoff doc extraction", () => {
-  // Mirrors extractHandoffDoc in surfaces/index.ts: metadata first, then the
-  // standardized session-handoff filename shape, then a label-anchored prose parse.
-  const extractHandoffDoc = (
-    content: string,
-    metadata: Record<string, unknown> | null
-  ): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } => {
-    const metaVal =
-      metadata && typeof metadata.handoff_doc === "string" ? metadata.handoff_doc.trim() : "";
-    if (metaVal) return { path: metaVal, source: "metadata" };
-    const conv = content.match(/[^\s()]*session-handoff[^\s()]*\.md/g);
-    if (conv && conv.length > 0) return { path: conv[conv.length - 1], source: "convention" };
-    const label = content.match(
-      /(?:full\s+|latest\s+)?handoff(?:\s+doc)?(?:\s+path)?\s*:?\s*(\S+\.md)/i
-    );
-    if (label) return { path: label[1], source: "parsed" };
-    return { source: "none" };
-  };
-
   it("TC-SUR71: structured metadata.handoff_doc takes precedence over the body", () => {
     const r = extractHandoffDoc(
       "## Handoff doc path\nother-session-handoff-2026-07-01-01.md",
@@ -839,5 +836,129 @@ describe("get_last_checkpoint — handoff doc extraction", () => {
     const none = extractHandoffDoc("No handoff written this session.", null);
     expect(none.source).toBe("none");
     expect(none.path).toBeUndefined();
+  });
+});
+
+// ── checkpoint: handoff folder derivation ────────────────────────────────────
+// deriveHandoffFolder is imported from source. The tool has no filesystem
+// access, so the folder a project uses is learned from the path its previous
+// checkpoint already wrote - but only when that path is canonically named, so
+// earlier drift is not taught forward.
+
+describe("checkpoint — handoff folder derivation", () => {
+  it("TC-SUR90: learns the folder from structured metadata, prefix included", () => {
+    expect(
+      deriveHandoffFolder("", {
+        handoff_doc: "circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md",
+      })
+    ).toBe("circle-docs/handoffs");
+  });
+
+  it("TC-SUR91: learns the folder from a canonical filename in the body", () => {
+    expect(
+      deriveHandoffFolder(
+        "## Handoff doc path\nfounders-os-docs/handoffs/founders-os-session-handoff-2026-07-20-01.md",
+        null
+      )
+    ).toBe("founders-os-docs/handoffs");
+  });
+
+  it("TC-SUR92: a drifted checkpoint-style path is NOT taught forward", () => {
+    // The 2026-07-27 incident: a hand-rolled checkpoints/<project>-checkpoint-<date>.md.
+    // It resolves via the prose parse, which is too weak to set a convention.
+    expect(
+      deriveHandoffFolder(
+        "Handoff doc: checkpoints/social-circle-checkpoint-2026-07-27.md",
+        null
+      )
+    ).toBeNull();
+  });
+
+  it("TC-SUR93: a drifted path stored in metadata is rejected too", () => {
+    expect(
+      deriveHandoffFolder("", {
+        handoff_doc: "checkpoints/social-circle-checkpoint-2026-07-27.md",
+      })
+    ).toBeNull();
+  });
+
+  it("TC-SUR94: a checkpoint with no handoff pointer yields no folder", () => {
+    expect(deriveHandoffFolder("DONE / SHIPPED: things happened.", null)).toBeNull();
+  });
+
+  it("TC-SUR95: a bare filename with no folder yields no folder", () => {
+    expect(
+      deriveHandoffFolder("", { handoff_doc: "x-session-handoff-2026-07-27-01.md" })
+    ).toBeNull();
+  });
+
+  it("TC-SUR96: path traversal in the stored pointer is rejected", () => {
+    expect(
+      deriveHandoffFolder("", {
+        handoff_doc: "../../etc/x-session-handoff-2026-07-27-01.md",
+      })
+    ).toBeNull();
+  });
+});
+
+// ── checkpoint: per-day sequence from the files, not the record count ────────
+
+describe("checkpoint — next handoff sequence", () => {
+  const withPointer = (path: string) => ({ content: "", metadata: { handoff_doc: path } });
+  const noPointer = { content: "DONE / SHIPPED: work happened.", metadata: null };
+
+  it("TC-SUR97: takes the next number after the highest -NN written today", () => {
+    expect(
+      nextHandoffSeq([
+        withPointer("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-01.md"),
+        withPointer("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md"),
+        withPointer("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-02.md"),
+      ])
+    ).toBe(4);
+  });
+
+  it("TC-SUR98: a record with no handoff does not inflate the number", () => {
+    // Three checkpoints today but only one handoff file: counting records would
+    // say 4 and leave a gap at 02 and 03. The files say the next one is 02.
+    expect(
+      nextHandoffSeq([
+        withPointer("handoffs/x-session-handoff-2026-07-27-01.md"),
+        noPointer,
+        noPointer,
+      ])
+    ).toBe(2);
+  });
+
+  it("TC-SUR99: a handoff numbered past the record count does not collide", () => {
+    // One record, but the file on disk is already -03 (earlier handoffs were
+    // written without records). Counting records would return 2 and overwrite.
+    expect(nextHandoffSeq([withPointer("handoffs/x-session-handoff-2026-07-27-03.md")])).toBe(4);
+  });
+
+  it("TC-SUR100: falls back to the record count when no pointer is readable", () => {
+    expect(nextHandoffSeq([noPointer, noPointer])).toBe(3);
+  });
+
+  it("TC-SUR101: an empty day starts at 01", () => {
+    expect(nextHandoffSeq([])).toBe(1);
+  });
+
+  it("TC-SUR102: a drifted filename is ignored rather than parsed for a number", () => {
+    // checkpoints/<project>-checkpoint-<date>.md has no -NN and is not canonical.
+    expect(
+      nextHandoffSeq([{ content: "Handoff doc: checkpoints/x-checkpoint-2026-07-27.md", metadata: null }])
+    ).toBe(2);
+  });
+
+  it("TC-SUR103: the resulting number feeds a well-formed filename", () => {
+    const seq = nextHandoffSeq([
+      withPointer("circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md"),
+    ]);
+    const folder = deriveHandoffFolder("", {
+      handoff_doc: "circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md",
+    });
+    expect(handoffDocHint("social-circle", "2026-07-27", seq, folder ?? DEFAULT_HANDOFF_FOLDER)).toBe(
+      "circle-docs/handoffs/social-circle-session-handoff-2026-07-27-04.md"
+    );
   });
 });

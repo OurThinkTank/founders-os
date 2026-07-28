@@ -51,7 +51,7 @@ const cardEntityType = z.enum([
 // Local date (YYYY-MM-DD) of a stored timestamp, in the caller's timezone.
 // Used to count how many checkpoints already landed "today" so the handoff
 // doc gets the right per-day sequence number.
-function localDateOf(ts: string, timezone?: string): string {
+export function localDateOf(ts: string, timezone?: string): string {
   const tz = getLocalTimezone(timezone);
   try {
     return new Date(ts).toLocaleDateString("en-CA", { timeZone: tz });
@@ -59,6 +59,12 @@ function localDateOf(ts: string, timezone?: string): string {
     return new Date(ts).toISOString().split("T")[0];
   }
 }
+
+// Fallback folder for handoff docs, used ONLY when a project has no previous
+// handoff doc to learn from (its first-ever checkpoint). Every project observed
+// so far keeps handoffs in `handoffs/`; the old `docs/` default matched no repo
+// and pulled agents toward whatever folder happened to exist instead.
+export const DEFAULT_HANDOFF_FOLDER = "handoffs";
 
 // Suggested path for the long-form session handoff doc, written into the
 // project repo (not founders-os). Falls back to a generic name when the
@@ -70,10 +76,16 @@ function localDateOf(ts: string, timezone?: string): string {
 // chronological order within a day. `seq` is a best-effort default derived
 // from how many checkpoints already landed today; the agent reconciles it
 // against the actual files in the target folder when one exists.
-function handoffDocHint(project: string | undefined, today: string, seq = 1): string {
+export function handoffDocHint(
+  project: string | undefined,
+  today: string,
+  seq = 1,
+  folder: string = DEFAULT_HANDOFF_FOLDER,
+): string {
   const slug = project ? project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "session";
   const nn = String(Math.max(1, seq)).padStart(2, "0");
-  return `docs/${slug}-session-handoff-${today}-${nn}.md`;
+  const dir = folder.replace(/\/+$/, "") || DEFAULT_HANDOFF_FOLDER;
+  return `${dir}/${slug}-session-handoff-${today}-${nn}.md`;
 }
 
 // Disambiguation thresholds for get_last_checkpoint (proposal 2026-07-20:
@@ -99,7 +111,7 @@ const LAST_CHECKPOINT_NEAR_TIE_DAYS = 1;
 //      last match (the handoff line sits near the end and is most specific).
 //   3. Last resort - a label-anchored prose parse for non-standard handoff names.
 // The source is returned so callers can tell how confident the resolution is.
-function extractHandoffDoc(
+export function extractHandoffDoc(
   content: string,
   metadata: Record<string, unknown> | null,
 ): { path?: string; source: "metadata" | "convention" | "parsed" | "none" } {
@@ -116,6 +128,54 @@ function extractHandoffDoc(
   if (label) return { path: label[1], source: "parsed" };
 
   return { source: "none" };
+}
+
+// Where a project actually keeps its handoff docs, learned from the previous
+// checkpoint's own handoff pointer. The tool has no filesystem access, so a
+// path this project already wrote is the only available evidence - and it is
+// better evidence than any hardcoded default, because it reflects what the
+// team really does, prefix and all (e.g. "circle-docs/handoffs").
+//
+// Only canonically-named paths are trusted. A drifted previous path (say
+// "checkpoints/<project>-checkpoint-<date>.md") must NOT teach the next
+// session to drift the same way, so anything that fails the filename
+// convention is ignored and the caller falls back to the default.
+export function deriveHandoffFolder(
+  content: string,
+  metadata: Record<string, unknown> | null,
+): string | null {
+  const { path, source } = extractHandoffDoc(content, metadata);
+  // Tier 3 ("parsed") is a loose prose match and too weak to set a convention.
+  if (!path || (source !== "metadata" && source !== "convention")) return null;
+  // The metadata tier can still hold a drifted path, so re-check the token.
+  if (!path.includes("session-handoff")) return null;
+  const idx = path.lastIndexOf("/");
+  if (idx <= 0) return null;
+  const dir = path.slice(0, idx);
+  if (dir.includes("..")) return null;
+  return dir;
+}
+
+// Next per-day sequence number for a handoff filename, read from the -NN that
+// today's handoff docs already use rather than from how many checkpoint records
+// landed. Those two numbers drift apart in both directions: a checkpoint stored
+// without a handoff inflates the count and leaves gaps, while a handoff written
+// without a checkpoint record deflates it and lands two files on the same
+// number - the damaging case, because it silently overwrites in a shared repo.
+//
+// Falls back to the record count only when today produced no readable pointer
+// at all (a project's first day on the tool, or a day of drifted writes).
+export function nextHandoffSeq(
+  todayRows: { content: string; metadata: Record<string, unknown> | null }[],
+): number {
+  let highest = 0;
+  for (const row of todayRows) {
+    const { path, source } = extractHandoffDoc(row.content, row.metadata);
+    if (!path || (source !== "metadata" && source !== "convention")) continue;
+    const seq = path.match(/-(\d{2})\.md$/);
+    if (seq) highest = Math.max(highest, Number(seq[1]));
+  }
+  return highest > 0 ? highest + 1 : todayRows.length + 1;
 }
 
 export const surfaceTools: ToolMap = {
@@ -998,6 +1058,11 @@ export const surfaceTools: ToolMap = {
         created_by: string | null;
       } | null = null;
 
+      // Folder this project keeps handoff docs in, learned from its own history.
+      // Team-wide like NN: taken from the most recent checkpoint carrying a
+      // canonical pointer, whoever wrote it, so teammates converge on one folder.
+      let handoff_folder: string | null = null;
+
       // Per-day sequence number (NN) for the handoff-doc filename. Best-effort
       // default: how many checkpoints for this project already landed today,
       // plus one. This session's checkpoint is not stored yet at call time, so
@@ -1008,7 +1073,7 @@ export const surfaceTools: ToolMap = {
       if (project) {
         const { data } = await ctx.db
           .from("memories")
-          .select("id, content, created_at, created_by")
+          .select("id, content, created_at, created_by, metadata")
           .eq("company_id", ctx.companyId)
           .eq("project", project)
           .eq("metadata->>kind", "checkpoint")
@@ -1021,6 +1086,7 @@ export const surfaceTools: ToolMap = {
             content: string;
             created_at: string;
             created_by: string | null;
+            metadata: Record<string, unknown> | null;
           }[];
           // previous_checkpoint: the caller's own last checkpoint by default,
           // else the team's most recent when author='anyone'.
@@ -1028,19 +1094,43 @@ export const surfaceTools: ToolMap = {
             author === "anyone"
               ? rows[0]
               : rows.find((m) => m.created_by === ctx.userId) ?? null;
-          previous_checkpoint = pick ?? null;
-          // NN is ALWAYS team-wide: count every checkpoint that landed today
+          // metadata is read for folder derivation only; the returned shape of
+          // previous_checkpoint is deliberately unchanged.
+          if (pick) {
+            const { metadata: _ignored, ...withoutMetadata } = pick;
+            previous_checkpoint = withoutMetadata;
+          }
+          // Walk newest-first and take the first checkpoint that points at a
+          // canonically-named handoff doc. Scanning past the caller's own most
+          // recent entry means one teammate's correct checkpoint is enough to
+          // keep the whole project on the right folder.
+          for (const row of rows) {
+            const dir = deriveHandoffFolder(row.content, row.metadata);
+            if (dir) {
+              handoff_folder = dir;
+              break;
+            }
+          }
+          // NN is ALWAYS team-wide: consider every checkpoint that landed today
           // regardless of author, so handoff filenames in the shared repo do
           // not collide across teammates.
-          const todayCount = rows.filter(
+          const todayRows = rows.filter(
             (m) => localDateOf(m.created_at, timezone) === today,
-          ).length;
-          handoff_seq = todayCount + 1;
+          );
+          handoff_seq = nextHandoffSeq(todayRows);
         }
       }
 
+      // One resolved folder for the whole response, so the hint, the step-6
+      // text and handoff_naming can never disagree with each other.
+      const resolvedFolder = handoff_folder ?? DEFAULT_HANDOFF_FOLDER;
+
       return {
         today,
+        // Surfaced so a wrong filename date is diagnosable. When the caller
+        // omits `timezone` this is the host's own zone, which is correct on a
+        // desktop but is the server's zone for a hosted or scheduled run.
+        timezone: getLocalTimezone(timezone),
         project: project ?? null,
         scope,
         previous_checkpoint_author: author,
@@ -1075,7 +1165,11 @@ export const surfaceTools: ToolMap = {
           {
             step: 6,
             action: "Write the handoff doc",
-            detail: `Write a detailed handoff markdown file inside the project repo, using the path in \`handoff_doc_hint\` (or wherever this project keeps its handoff docs). The filename ends with a two-digit per-day sequence (\`-NN\`): the hint defaults to '${handoffDocHint(project, today, handoff_seq)}', but if handoff docs for ${today} already exist in the target folder, use the next number after the highest one there. Put the final path in the stored checkpoint body.`,
+            detail: `Write a detailed handoff markdown file inside the project repo at '${handoffDocHint(project, today, handoff_seq, resolvedFolder)}'. ${
+              handoff_folder
+                ? `The folder '${resolvedFolder}' is where this project already keeps its handoff docs, read from its previous checkpoint.`
+                : `This project has no previous handoff doc, so '${resolvedFolder}' is a default. If the repo already keeps handoff docs somewhere else, use that folder instead.`
+            } Do NOT reconstruct this convention from other files in the repo: a folder or filename that disagrees with this path is earlier drift, not precedent. The filename ends with a two-digit per-day sequence (\`-NN\`); if handoff docs for ${today} already exist in that folder, use the next number after the highest one there. Put the final path BOTH in the stored checkpoint body and in the \`handoff_doc\` param of step 4.`,
           },
         ],
         store_with: {
@@ -1097,15 +1191,19 @@ export const surfaceTools: ToolMap = {
           ],
           note: "resolution:'confirm' skips near-duplicate detection because checkpoints are append-only timeline entries. Set handoff_doc to the final reconciled handoff path (the same file you write in step 6) so get_last_checkpoint returns it as a structured field instead of parsing it out of the body.",
         },
-        handoff_doc_hint: handoffDocHint(project, today, handoff_seq),
+        handoff_doc_hint: handoffDocHint(project, today, handoff_seq, resolvedFolder),
         handoff_naming: {
           convention: "<project>-session-handoff-YYYY-MM-DD-NN.md",
           nn: "Two-digit, per-day sequence. 01 = first session that day; resets to 01 each day. Zero-padded so files sort chronologically within a day.",
           suggested_nn: String(Math.max(1, handoff_seq)).padStart(2, "0"),
           reconcile:
-            "suggested_nn is derived from today's checkpoint count. If handoff docs for today already exist in the project's handoff folder, use the next number after the highest one there instead - the files are the source of truth.",
+            "suggested_nn is read from the -NN already used by today's stored handoff pointers, falling back to today's checkpoint count when none are readable. The files on disk remain the final authority: if handoff docs for today exist in the folder that this response did not know about, use the next number after the highest one there.",
           feature_docs:
             "Feature-specific plan/handoff docs written during this session carry the SAME -NN so they group with the session (e.g. <topic>-plan-YYYY-MM-DD-NN.md).",
+          folder: resolvedFolder,
+          folder_source: handoff_folder
+            ? "derived - this project's previous checkpoint points at a handoff doc in this folder, so it is where the docs actually live"
+            : "default - no previous handoff doc found for this project; if the repo already keeps handoff docs elsewhere, use that folder and the next checkpoint will learn it",
         },
         previous_checkpoint,
         guidance:

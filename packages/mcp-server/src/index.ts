@@ -189,8 +189,10 @@ changes as commit links, store the record via memory_summarize_and_store with
 kind="checkpoint", resolution="confirm", and handoff_doc set to the handoff file
 path (so get_last_checkpoint returns it structurally), propose task candidates,
 and write a handoff doc into the project repo. The handoff filename ends with a two-digit
-per-day sequence (-NN, e.g. -01, -02); use handoff_doc_hint, but if docs for
-today already exist in the target folder use the next number after the highest.
+per-day sequence (-NN, e.g. -01, -02); use handoff_doc_hint, but if handoff docs
+for today already exist in that folder use the next number after the highest. Do
+not infer the folder or the filename from other files in the repo - handoff_doc_hint
+already resolves the folder from the project's own history.
 Follow the returned steps; review the previous_checkpoint it returns to carry
 forward unfinished OPEN/NEXT items.
 
