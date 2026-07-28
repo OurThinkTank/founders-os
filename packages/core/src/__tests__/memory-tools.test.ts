@@ -12,7 +12,7 @@
 //         insert args, error propagation, return shape
 // ============================================================
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 
 // ──────────────────────────────────────────────────────────────
 // PART 1 - PURE LOGIC (no mocks)
@@ -1271,5 +1271,84 @@ describe("checkpoint write-path — handoff_doc lands in metadata", () => {
     });
     const meta = mockInsertArgs.captured["memories"]?.metadata as Record<string, unknown> | undefined;
     expect(meta).toEqual({ handoff_doc: "docs/y-session-handoff-2026-07-20-01.md" });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// PART 4 - CHECKPOINT DRIFT WARNINGS
+//
+// A checkpoint is only useful later if it carries a resolvable pointer to its
+// handoff doc. Before these warnings existed nothing in the system noticed a
+// checkpoint that had drifted, so it stayed invisible until someone tripped
+// over it (the 2026-07-27 ritual-drift incident).
+// ──────────────────────────────────────────────────────────────
+
+describe("checkpointWarnings", () => {
+  // Loaded from source, not mirrored, so these assertions cover shipping code.
+  // Dynamic like the rest of this file: a static import would pull ./embed.js
+  // in at parse time, ahead of the isolateModules singleton tests above.
+  let checkpointWarnings: typeof import("../tools/memory/index.js").checkpointWarnings;
+  beforeAll(async () => {
+    ({ checkpointWarnings } = await import("../tools/memory/index.js"));
+  });
+
+  const codes = (w: { code: string }[]) => w.map((x) => x.code);
+
+  it("TC-MEM99: a well-formed checkpoint warns about nothing", () => {
+    expect(
+      checkpointWarnings(
+        "checkpoint",
+        "circle-docs/handoffs/social-circle-session-handoff-2026-07-27-03.md",
+        "memory_summarize_and_store"
+      )
+    ).toEqual([]);
+  });
+
+  it("TC-MEM100: non-checkpoint memories are never warned about", () => {
+    expect(checkpointWarnings(undefined, undefined, "memory_store")).toEqual([]);
+    expect(checkpointWarnings("decision", undefined, "memory_store")).toEqual([]);
+  });
+
+  it("TC-MEM101: a checkpoint with no handoff_doc is flagged", () => {
+    const w = checkpointWarnings("checkpoint", undefined, "memory_summarize_and_store");
+    expect(codes(w)).toEqual(["checkpoint_missing_handoff_doc"]);
+  });
+
+  it("TC-MEM102: a non-canonical handoff_doc is flagged", () => {
+    // The exact drift from 2026-07-27: a hand-rolled checkpoints/ file.
+    const w = checkpointWarnings(
+      "checkpoint",
+      "circle-docs/checkpoints/social-circle-checkpoint-2026-07-27.md",
+      "memory_summarize_and_store"
+    );
+    expect(codes(w)).toEqual(["checkpoint_handoff_doc_non_canonical"]);
+  });
+
+  it("TC-MEM103: storing a checkpoint via memory_store is flagged as the wrong tool", () => {
+    const w = checkpointWarnings(
+      "checkpoint",
+      "handoffs/x-session-handoff-2026-07-27-01.md",
+      "memory_store"
+    );
+    expect(codes(w)).toEqual(["checkpoint_wrong_store_tool"]);
+  });
+
+  it("TC-MEM104: the full 2026-07-27 failure raises both warnings at once", () => {
+    // memory_store AND no pointer - exactly what the drifted session did.
+    const w = checkpointWarnings("checkpoint", undefined, "memory_store");
+    expect(codes(w)).toEqual([
+      "checkpoint_wrong_store_tool",
+      "checkpoint_missing_handoff_doc",
+    ]);
+  });
+
+  it("TC-MEM105: every warning carries a code and severity for programmatic use", () => {
+    const w = checkpointWarnings("checkpoint", undefined, "memory_store");
+    expect(w.length).toBeGreaterThan(0);
+    for (const x of w) {
+      expect(x.severity).toBe("warning");
+      expect(x.code).toMatch(/^checkpoint_/);
+      expect(x.message.length).toBeGreaterThan(20);
+    }
   });
 });
