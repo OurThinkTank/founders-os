@@ -7,3 +7,6 @@ dist/
 founders-os-inspector.json
 *.docx
 *.xlsx
+
+# MCPB bundle build output (packaging/mcpb/build.sh)
+build/

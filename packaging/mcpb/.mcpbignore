@@ -1,0 +1,48 @@
+# Founders OS MCPB exclusions
+#
+# mcpb pack already excludes by default: .git, .DS_Store, *.map, *.log,
+# node_modules/.cache, node_modules/.bin, package-lock.json, .npmrc, .env.local
+#
+# Everything below is additional pruning of the production install tree.
+#
+# PRUNE CAREFULLY. Some packages ship runtime JSON, WASM, or certificate
+# bundles under paths that look like documentation or examples. After adding
+# any pattern here, re-run the cold-start smoke test (runbook section 8)
+# before shipping. A larger bundle beats a broken one.
+
+# Docs and sources that never execute.
+#
+# NOTE: LICENSE / LICENCE / NOTICE files are deliberately NOT excluded.
+# This bundle redistributes its dependencies, and MIT, BSD, and Apache-2.0
+# all require the license text to travel with the code. Stripping them to
+# save a few hundred kilobytes would put the artifact out of compliance.
+**/*.md
+**/*.markdown
+**/CHANGELOG*
+**/*.ts
+**/*.tsx
+**/*.flow
+
+# Test and CI material from dependencies
+**/__tests__/
+**/test/
+**/tests/
+**/*.test.js
+**/*.spec.js
+**/.github/
+**/.circleci/
+**/coverage/
+
+# Editor and tooling noise
+**/.editorconfig
+**/.eslintrc*
+**/.prettierrc*
+**/tsconfig*.json
+**/.vscode/
+**/.idea/
+
+# Icon sources and the rasterizer are authoring inputs, not runtime assets.
+# The committed PNGs they produce are what the manifest references.
+assets/*.svg
+assets/generate-icons.mjs
+assets/screenshots/

@@ -1,0 +1,149 @@
+{
+  "manifest_version": "0.3",
+  "name": "founders-os",
+  "display_name": "Founders OS",
+  "version": "${VERSION}",
+  "description": "CRM, tasks, finances, feeds, and memory for founders, on your own Postgres.",
+  "long_description": "Founders OS gives an AI assistant a working memory of your business: customers and interactions, tasks and playbooks, accounts and transactions, feeds, and durable org and personal memory. All data lives in a Supabase project you own and control. Nothing is stored on our servers.\n\n**Setup required before first use.** You need a Supabase project with the Founders OS schema applied, and an embedding provider key. Generate your schema file and credentials at https://foundersmcp.com/setup, run the SQL in your Supabase SQL Editor, then enter the values in the fields below.\n\nIf you install this before running the schema, Founders OS will tell you so and point you at the setup page rather than failing silently.",
+  "author": {
+    "name": "OurThinkTank",
+    "url": "https://foundersmcp.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OurThinkTank/founders-os.git"
+  },
+  "homepage": "https://foundersmcp.com",
+  "documentation": "https://github.com/OurThinkTank/founders-os#readme",
+  "support": "https://github.com/OurThinkTank/founders-os/issues",
+  "license": "MIT",
+  "icon": "icon.png",
+  "icons": [
+    { "src": "assets/icon-512.png", "size": "512x512" },
+    { "src": "assets/icon-256.png", "size": "256x256" },
+    { "src": "assets/icon-128.png", "size": "128x128" },
+    { "src": "assets/icon-64.png", "size": "64x64" },
+    { "src": "assets/icon-32.png", "size": "32x32" }
+  ],
+  "keywords": [
+    "crm",
+    "founders",
+    "startup",
+    "small-business",
+    "tasks",
+    "finances",
+    "memory",
+    "supabase"
+  ],
+  "privacy_policies": [
+    "https://supabase.com/privacy",
+    "https://openai.com/policies/privacy-policy"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "SUPABASE_URL": "${user_config.supabase_url}",
+        "SUPABASE_SECRET_KEY": "${user_config.supabase_secret_key}",
+        "FOUNDERS_OS_COMPANY_ID": "${user_config.company_id}",
+        "FOUNDERS_OS_USER_ID": "${user_config.user_id}",
+        "FOUNDERS_OS_TIMEZONE": "${user_config.timezone}",
+        "EMBEDDING_PROVIDER": "${user_config.embedding_provider}",
+        "EMBEDDING_MODEL": "${user_config.embedding_model}",
+        "EMBEDDING_DIM": "${user_config.embedding_dim}",
+        "OPENAI_API_KEY": "${user_config.openai_api_key}",
+        "AWS_DEFAULT_REGION": "${user_config.aws_region}",
+        "OLLAMA_BASE_URL": "${user_config.ollama_base_url}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "prompts_generated": false,
+  "user_config": {
+    "supabase_url": {
+      "type": "string",
+      "title": "Supabase project URL",
+      "description": "https://your-project.supabase.co",
+      "required": true
+    },
+    "supabase_secret_key": {
+      "type": "string",
+      "title": "Supabase secret key",
+      "description": "Service-role secret key (starts with sb_secret_). Stored securely by your client and never sent to OurThinkTank.",
+      "sensitive": true,
+      "required": true
+    },
+    "company_id": {
+      "type": "string",
+      "title": "Company ID",
+      "description": "A unique slug for your org, for example acme-co. Everyone on the same Supabase project using this value shares that company's data. Leave blank to run against the sample company.",
+      "required": false
+    },
+    "user_id": {
+      "type": "string",
+      "title": "Your user ID",
+      "description": "Identifies you for personal memory scope, for example doug. Each team member should use a distinct value. Letters, numbers, underscore, and hyphen only.",
+      "required": false
+    },
+    "timezone": {
+      "type": "string",
+      "title": "Timezone",
+      "description": "IANA timezone, for example America/Los_Angeles. Leave blank to use your computer's timezone.",
+      "required": false
+    },
+    "embedding_provider": {
+      "type": "string",
+      "title": "Embedding provider",
+      "description": "One of: openai, bedrock, ollama. Required for the memory tools.",
+      "default": "openai",
+      "required": false
+    },
+    "embedding_model": {
+      "type": "string",
+      "title": "Embedding model",
+      "description": "Leave blank for the provider default: openai text-embedding-3-small, bedrock amazon.nova-2-multimodal-embeddings-v1:0, ollama nomic-embed-text.",
+      "default": "text-embedding-3-small",
+      "required": false
+    },
+    "embedding_dim": {
+      "type": "number",
+      "title": "Embedding dimensions",
+      "description": "MUST match the vector() size used when you ran setup.sql. openai/3-small = 1536, bedrock/nova = 1024, ollama/nomic = 768. Never change this after setup.",
+      "default": 1536,
+      "min": 1,
+      "max": 4096,
+      "required": false
+    },
+    "openai_api_key": {
+      "type": "string",
+      "title": "OpenAI API key",
+      "description": "Required only when the embedding provider is openai.",
+      "sensitive": true,
+      "required": false
+    },
+    "aws_region": {
+      "type": "string",
+      "title": "AWS region",
+      "description": "Required only when the embedding provider is bedrock. Credentials come from the standard AWS credential chain.",
+      "default": "us-east-1",
+      "required": false
+    },
+    "ollama_base_url": {
+      "type": "string",
+      "title": "Ollama base URL",
+      "description": "Required only when the embedding provider is ollama.",
+      "default": "http://localhost:11434",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
