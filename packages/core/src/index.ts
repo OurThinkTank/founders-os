@@ -53,6 +53,22 @@ export {
   DEFAULT_COMPANY_ID,
 } from "./utils/identity.js";
 
+// ---- Database schema state ----
+// Shared so get_version, the orienting tools, and registerToolMap's error
+// path all read the same answer. This module never runs DDL.
+export {
+  getSchemaState,
+  getSchemaHint,
+  getSetupGuidanceForFailure,
+  resetSchemaStateCache,
+} from "./schema-state.js";
+export type { SchemaState, SchemaStatus } from "./schema-state.js";
+
+// ---- Environment helpers ----
+// Blank-is-unset env reading. Exported so the mcp-server package and any
+// future transport wrapper read user-configurable env vars the same way.
+export { readEnv, readEnvInt } from "./utils/env.js";
+
 // ---- Shared types ----
 export type {
   ToolContext,

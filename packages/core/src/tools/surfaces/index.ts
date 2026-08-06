@@ -30,6 +30,7 @@ import { registerToolMap, type ToolMap } from "../register.js";
 import { getLocalDateStr, getLocalTime, getTimeOfDay, getLocalTimezone } from "../dates.js";
 import { getFinancialAccess, financialPermissionError } from "../financial/access.js";
 import { RENDERING_CONTRACT, RENDERING_CONTRACT_VERSION } from "../../contract.js";
+import { getSchemaHint } from "../../schema-state.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
 import { conflict } from "../conflict.js";
@@ -443,7 +444,7 @@ export const surfaceTools: ToolMap = {
           "cowork plugin; no comparison happens and no warning fires."
         ),
     }),
-    handler: async (_ctx: ToolContext, {
+    handler: async (ctx: ToolContext, {
       timezone,
       client_capabilities,
       expected_contract_version,
@@ -456,9 +457,12 @@ export const surfaceTools: ToolMap = {
         | "prose";
       expected_contract_version?: number;
     }) => {
-      // get_session_start does no DB work — it's a pointer tool. The ctx
-      // parameter is required for the contextual signature but is unused
-      // here. Renamed to _ctx so TypeScript / lint catches accidental use.
+      // get_session_start fetches no data — it's a pointer tool. The one
+      // exception is the schema check below: this tool hands the agent a list
+      // of six tools to call, every one of which fails against a database that
+      // was never provisioned, so it is the right place to catch that before
+      // the user watches six failures in a row. The check is cached, so it
+      // costs one query on the first call of the process and nothing after.
       const resolvedTz = getLocalTimezone(timezone);
       const today = getLocalDateStr(resolvedTz);
       const localTime = getLocalTime(resolvedTz);
@@ -542,6 +546,16 @@ export const surfaceTools: ToolMap = {
       }
       if (contract_version_warning) {
         result.contract_version_warning = contract_version_warning;
+      }
+
+      // Null when the schema is healthy, which is the overwhelmingly common
+      // case, so this normally adds nothing to the response.
+      const schemaHint = await getSchemaHint(ctx?.db);
+      if (schemaHint) {
+        result.setup_required = true;
+        result.next_step = schemaHint;
+        result.do_not_call_these_tools_yet =
+          "The database is not ready. Tell the user the next_step above instead of calling the tools in call_these_tools; they will all fail until setup is done.";
       }
 
       return result;

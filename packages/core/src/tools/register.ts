@@ -6,6 +6,9 @@
 //   2. Wraps every handler response in the MCP content envelope
 //   3. Catches any thrown error and returns a structured
 //      { error: message } response with isError: true
+//   4. On failure, asks schema-state.ts whether the database is
+//      actually provisioned, and if not, adds setup guidance to
+//      the error response (see the note on that step below)
 //
 // This keeps all tool modules as pure data — they don't import
 // McpServer and don't produce MCP envelopes directly. They
@@ -17,6 +20,7 @@ import { z } from "zod";
 import { enrichDates } from "./dates.js";
 import { isConflictResponse } from "./conflict.js";
 import { RENDERING_CONTRACT_SHORT } from "../contract.js";
+import { getSetupGuidanceForFailure } from "../schema-state.js";
 import type { ToolContext } from "../types/context.js";
 
 /**
@@ -201,11 +205,32 @@ export function registerToolMap(
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Unknown error";
+
+          // Every tool call against an unprovisioned database fails, and the
+          // bare message ("Failed to create customer: ...") gives the user no
+          // hint that the schema was never installed. Rather than pattern-match
+          // the failing error (handlers discard the PostgREST code, so that
+          // would mean matching message text and would eventually misfile a
+          // real bug as a setup problem), we ask the database directly whether
+          // the schema is present. A healthy schema returns null here and the
+          // error passes through completely untouched.
+          const setup = await getSetupGuidanceForFailure(ctx?.db);
+
           return {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ error: message }),
+                text: JSON.stringify(
+                  setup
+                    ? {
+                        error: message,
+                        setup_required: true,
+                        schema_status: setup.status,
+                        next_step: setup.guidance,
+                        docs: "https://github.com/OurThinkTank/founders-os#setup",
+                      }
+                    : { error: message }
+                ),
               },
             ],
             isError: true,
