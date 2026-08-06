@@ -18,6 +18,7 @@ import {
   detectFirstRun,
   getCompanyId,
   getPlaceholderIdentityHint,
+  getSchemaHint,
 } from "@ourthinktank/founders-os-core";
 import { readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -552,6 +553,24 @@ export function registerMetaTools(server: McpServer): void {
       const identityHint = getPlaceholderIdentityHint();
       if (identityHint) {
         content.push({ type: "text", text: `\n\n_hint: ${identityHint}` });
+      }
+
+      // Say so up front when the database schema was never installed or is
+      // behind. Without this the user only finds out by asking for something
+      // and watching it fail. Null when the schema is healthy, and never
+      // throws, but the client construction can, so keep it guarded.
+      try {
+        const schemaHint = await getSchemaHint(createServiceClient());
+        if (schemaHint) {
+          content.push({
+            type: "text",
+            text:
+              `\n\n_hint: ${schemaHint} ` +
+              `Tell the user this before attempting any other tool call, since every one of them will fail until it is done._`,
+          });
+        }
+      } catch {
+        // No usable client: the capabilities content is still worth returning.
       }
 
       return { content };

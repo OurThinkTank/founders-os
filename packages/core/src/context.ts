@@ -14,7 +14,11 @@
 
 import { createServiceClient } from "./supabase.js";
 import { getCompanyId, getUserId, isSoloMode } from "./utils/identity.js";
-import type { EmbeddingConfig, ToolContext } from "./types/context.js";
+import { readEnv, readEnvInt } from "./utils/env.js";
+import type {
+  EmbeddingConfig,
+  ToolContext,
+} from "./types/context.js";
 
 let cached: ToolContext | null = null;
 
@@ -29,10 +33,14 @@ let cached: ToolContext | null = null;
  *
  * Exported so memory-tools tests can rebuild the env-driven config
  * after toggling process.env in test isolation.
+ *
+ * Every read goes through readEnv/readEnvInt so a blank value is treated
+ * as unset and the documented default fires. MCPB install dialogs
+ * substitute "" for optional fields the user left empty; see utils/env.ts.
  */
 export function readEmbeddingConfigFromEnv(): EmbeddingConfig {
   const providerName = (
-    process.env.EMBEDDING_PROVIDER ?? "openai"
+    readEnv("EMBEDDING_PROVIDER") ?? "openai"
   ).toLowerCase() as EmbeddingConfig["provider"];
   if (
     providerName !== "bedrock" &&
@@ -44,15 +52,8 @@ export function readEmbeddingConfigFromEnv(): EmbeddingConfig {
     );
   }
 
-  const explicitModel = process.env.EMBEDDING_MODEL;
-  const dimsRaw = process.env.EMBEDDING_DIM
-    ? parseInt(process.env.EMBEDDING_DIM, 10)
-    : undefined;
-  if (dimsRaw !== undefined && (isNaN(dimsRaw) || dimsRaw <= 0)) {
-    throw new Error(
-      `EMBEDDING_DIM must be a positive integer, got: "${process.env.EMBEDDING_DIM}"`
-    );
-  }
+  const explicitModel = readEnv("EMBEDDING_MODEL");
+  const dimsRaw = readEnvInt("EMBEDDING_DIM");
 
   // Provider-specific defaults match the constants the old embed.ts shipped.
   let model: string;
@@ -72,20 +73,10 @@ export function readEmbeddingConfigFromEnv(): EmbeddingConfig {
       break;
   }
 
-  const maxCalls = parseInt(process.env.EMBEDDING_RATE_LIMIT ?? "30", 10);
-  const windowSec = parseInt(process.env.EMBEDDING_RATE_WINDOW ?? "60", 10);
-  if (isNaN(maxCalls) || maxCalls <= 0) {
-    throw new Error(
-      `EMBEDDING_RATE_LIMIT must be a positive integer, got: "${process.env.EMBEDDING_RATE_LIMIT}"`
-    );
-  }
-  if (isNaN(windowSec) || windowSec <= 0) {
-    throw new Error(
-      `EMBEDDING_RATE_WINDOW must be a positive integer (seconds), got: "${process.env.EMBEDDING_RATE_WINDOW}"`
-    );
-  }
+  const maxCalls = readEnvInt("EMBEDDING_RATE_LIMIT") ?? 30;
+  const windowSec = readEnvInt("EMBEDDING_RATE_WINDOW") ?? 60;
 
-  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+  const ollamaBaseUrl = readEnv("OLLAMA_BASE_URL") ?? "http://localhost:11434";
   if (providerName === "ollama" && !/^https?:\/\//i.test(ollamaBaseUrl)) {
     throw new Error(
       `OLLAMA_BASE_URL must start with http:// or https://, got: "${ollamaBaseUrl}"`
@@ -96,8 +87,8 @@ export function readEmbeddingConfigFromEnv(): EmbeddingConfig {
     provider: providerName,
     model,
     dimensions,
-    openaiApiKey: process.env.OPENAI_API_KEY,
-    awsRegion: process.env.AWS_DEFAULT_REGION ?? "us-east-1",
+    openaiApiKey: readEnv("OPENAI_API_KEY"),
+    awsRegion: readEnv("AWS_DEFAULT_REGION") ?? "us-east-1",
     ollamaBaseUrl,
     rateLimit: { maxCalls, windowMs: windowSec * 1000 },
   };

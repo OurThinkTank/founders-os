@@ -16,6 +16,7 @@
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { DEFAULT_USER_ID } from "../utils/identity.js";
+import { readEnv } from "../utils/env.js";
 
 let resolved = false;
 let cachedResult = false;
@@ -44,7 +45,7 @@ export async function detectFirstRun(
   if (resolved) return cachedResult;
 
   // Match the user identity convention used by the memory tool
-  const userId = process.env.FOUNDERS_OS_USER_ID ?? DEFAULT_USER_ID;
+  const userId = readEnv("FOUNDERS_OS_USER_ID") ?? DEFAULT_USER_ID;
 
   try {
     const counts = await Promise.all([

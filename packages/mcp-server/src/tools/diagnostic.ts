@@ -18,6 +18,7 @@ import { dirname, resolve } from "node:path";
 import {
   RENDERING_CONTRACT_VERSION,
   EXPECTED_SCHEMA_VERSION,
+  getSchemaState,
 } from "@ourthinktank/founders-os-core";
 import type { ToolContext } from "@ourthinktank/founders-os-core";
 
@@ -159,66 +160,31 @@ function upgradeGuidance(method: LaunchMethod, tag: string): string {
  * against what this server version expects, and produce the fields
  * get_version reports. Never throws: a database problem becomes a
  * status string, not a tool failure.
+ *
+ * The classification itself lives in core (schema-state.ts) because
+ * registerToolMap needs the same answer when a tool call fails against an
+ * unprovisioned database. This function is now a thin projection of that
+ * shared state onto the field names get_version has always reported, so the
+ * two paths cannot drift apart.
+ *
+ * One behaviour change from the previous inline version: a database where
+ * founders_os_meta is absent now reports "missing" when the schema was never
+ * installed at all, and keeps reporting "untracked" only for a real legacy
+ * install that predates the marker. Those two need opposite advice and used
+ * to be conflated.
  */
 async function checkDbSchema(
   db: ToolContext["db"]
 ): Promise<Record<string, unknown>> {
+  const state = await getSchemaState(db);
+
   const out: Record<string, unknown> = {
-    expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+    expectedSchemaVersion: state.expectedVersion,
+    dbSchemaVersion: state.dbVersion,
+    dbSchemaStatus: state.status,
   };
-  try {
-    const { data, error } = await db
-      .from("founders_os_meta")
-      .select("value")
-      .eq("key", "schema_version")
-      .maybeSingle();
-
-    if (error) {
-      // 42P01 = undefined_table (raw Postgres), PGRST205 = table not found
-      // in PostgREST's schema cache. Either way: the marker predates this
-      // database, which is expected for installs created before the marker.
-      if (error.code === "42P01" || error.code === "PGRST205") {
-        out.dbSchemaVersion = null;
-        out.dbSchemaStatus = "untracked";
-        out.howToUpdateDb =
-          "This database predates schema-version tracking. Run the SCHEMA VERSION MARKER section of supabase/setup.sql in your Supabase SQL Editor (it is idempotent and safe on an existing database), then any migration files in supabase/migrations/ you have not applied yet.";
-      } else {
-        out.dbSchemaVersion = null;
-        out.dbSchemaStatus = "unknown";
-        out.dbSchemaError = error.message;
-      }
-      return out;
-    }
-
-    const dbVersion = data ? Number.parseInt(data.value, 10) : NaN;
-    if (!data || !Number.isFinite(dbVersion)) {
-      out.dbSchemaVersion = null;
-      out.dbSchemaStatus = "untracked";
-      out.howToUpdateDb =
-        "The founders_os_meta table exists but carries no schema_version marker. Run the SCHEMA VERSION MARKER section of supabase/setup.sql (idempotent) to set it.";
-      return out;
-    }
-
-    out.dbSchemaVersion = dbVersion;
-    if (dbVersion === EXPECTED_SCHEMA_VERSION) {
-      out.dbSchemaStatus = "current";
-    } else if (dbVersion < EXPECTED_SCHEMA_VERSION) {
-      out.dbSchemaStatus = "behind";
-      out.howToUpdateDb =
-        `Your database is at schema version ${dbVersion} but this server expects ${EXPECTED_SCHEMA_VERSION}. ` +
-        `In your Supabase SQL Editor, run the files in supabase/migrations/ numbered ${String(dbVersion + 1).padStart(3, "0")} through ${String(EXPECTED_SCHEMA_VERSION).padStart(3, "0")}, in order. ` +
-        `Migrations are idempotent; re-running one you already applied is safe.`;
-    } else {
-      out.dbSchemaStatus = "ahead";
-      out.howToUpdateDb =
-        `Your database is at schema version ${dbVersion}, newer than this server expects (${EXPECTED_SCHEMA_VERSION}). ` +
-        `Update the connector itself (see howToUpdate); do not change the database.`;
-    }
-  } catch (err) {
-    out.dbSchemaVersion = null;
-    out.dbSchemaStatus = "unknown";
-    out.dbSchemaError = err instanceof Error ? err.message : "Schema check failed";
-  }
+  if (state.guidance) out.howToUpdateDb = state.guidance;
+  if (state.error) out.dbSchemaError = state.error;
   return out;
 }
 
