@@ -19,6 +19,7 @@
 // ============================================================
 
 import { EXPECTED_SCHEMA_VERSION } from "./schema-version.js";
+import { hasCredentials } from "./supabase.js";
 import type { ToolContext } from "./types/context.js";
 
 /**
@@ -37,6 +38,8 @@ const CANARY_TABLE = "customers";
 const META_TABLE = "founders_os_meta";
 
 export type SchemaStatus =
+  /** No Supabase credentials. Nothing can work; the fix is config, not SQL. */
+  | "not_configured"
   /** Marker matches EXPECTED_SCHEMA_VERSION. Everything is fine. */
   | "current"
   /** Provisioned but older than this server expects. Migrations pending. */
@@ -74,6 +77,12 @@ function buildGuidance(
   dbVersion: number | null
 ): string | null {
   switch (status) {
+    case "not_configured":
+      return (
+        `Founders OS has no Supabase credentials, so it cannot reach a database yet. ` +
+        `Generate them at ${SETUP_URL} and set SUPABASE_URL and SUPABASE_SECRET_KEY in your MCP server config, ` +
+        `or fill in those fields if you installed the desktop extension.`
+      );
     case "missing":
       return (
         `Founders OS is connected to your Supabase project, but the database schema has not been installed yet, so no tools can read or write anything. ` +
@@ -157,6 +166,18 @@ export async function getSchemaState(
 
 async function probe(db: ToolContext["db"]): Promise<SchemaState> {
   const base = { expectedVersion: EXPECTED_SCHEMA_VERSION };
+
+  // Check config before touching the client. Without credentials the client is
+  // a thrower, and probing it would report "unknown" (an inconclusive database
+  // error) when the truth is specific and the fix is obvious.
+  if (!hasCredentials()) {
+    return {
+      ...base,
+      status: "not_configured",
+      dbVersion: null,
+      guidance: buildGuidance("not_configured", null),
+    };
+  }
 
   try {
     const { data, error } = await db

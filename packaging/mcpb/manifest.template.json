@@ -3,8 +3,8 @@
   "name": "founders-os",
   "display_name": "Founders OS",
   "version": "${VERSION}",
-  "description": "CRM, tasks, finances, feeds, and memory for founders, on your own Postgres.",
-  "long_description": "Founders OS gives an AI assistant a working memory of your business: customers and interactions, tasks and playbooks, accounts and transactions, feeds, and durable org and personal memory. All data lives in a Supabase project you own and control. Nothing is stored on our servers.\n\n**Setup required before first use.** You need a Supabase project with the Founders OS schema applied, and an embedding provider key. Generate your schema file and credentials at https://foundersmcp.com/setup, run the SQL in your Supabase SQL Editor, then enter the values in the fields below.\n\nIf you install this before running the schema, Founders OS will tell you so and point you at the setup page rather than failing silently.",
+  "description": "CRM, tasks, finances, feeds, and durable memory for founders, running on Postgres you own.",
+  "long_description": "The signals that matter to a founder are rarely in one place. A quiet task, a client nobody has spoken to in nine days, an open invoice. Separately unremarkable. Together, a decision you did not know you needed to make.\n\nFounders OS gives an AI assistant a durable working memory of your business, so it can see those things at once and tell you about them.\n\n## What your assistant can do\n\n**Customers and relationships.** Track customers, contacts, and every interaction. Pull a single card showing everything about an account: open tasks, recent conversations, invoices, history.\n\n**Tasks and playbooks.** Create, assign, link, and complete work. Surface what is overdue, blocked, or quietly stalled. Turn a repeatable process into a playbook and run it.\n\n**Finances.** Accounts, transactions, transfers, categories, and P&L reporting, with per-member access control over who can see what.\n\n**Memory that persists.** Store org-wide and personal knowledge with semantic recall, so context survives across sessions, tools, and teammates instead of dying with a chat window.\n\n**Daily orientation.** Start a session with a briefing that pulls together what fired while you were away, what is stuck, what is coming, and recent activity.\n\n**Feeds and projects.** Subscribe to sources, get briefings, and organize work into projects with real history.\n\n## Your data stays yours\n\nFounders OS runs locally over stdio against a Supabase project you create and control. Nothing is stored on our servers, and there is no account to create with us. If you stop using it, your data is already where it lives: a Postgres database you own, that you can query, export, or take somewhere else. That is a deliberate design choice, not a limitation.\n\n## Setup\n\nYou need a Supabase project and an embedding provider key before first use.\n\n1. Go to https://foundersmcp.com/setup and enter your Supabase credentials and embedding settings. Your credentials never leave the browser.\n2. Run the generated SQL in your Supabase SQL Editor.\n3. Install this extension and paste the values into the fields it prompts for.\n\nIf you install before running the schema, Founders OS will notice and tell you exactly what to do next, rather than failing with a confusing database error.\n\n## Try it\n\n- \"Catch me up\"\n- \"Add Acme Corp as a new prospect\"\n- \"Log a call with Sarah at Acme, we discussed pricing\"\n- \"Create a task to send the proposal by Friday and link it to Acme\"\n- \"What's stuck or overdue?\"\n- \"Show me everything about Acme Corp\"\n- \"Remember for the org: we're targeting SMB fintech this quarter\"\n- \"What can you do?\"\n\n## Requirements\n\n- Node.js 18 or later (bundled with Claude Desktop)\n- A Supabase project\n- An embedding provider: OpenAI, AWS Bedrock, or Ollama\n\nMIT licensed. Source at https://github.com/OurThinkTank/founders-os",
   "author": {
     "name": "OurThinkTank",
     "url": "https://foundersmcp.com"
@@ -19,11 +19,26 @@
   "license": "MIT",
   "icon": "icon.png",
   "icons": [
-    { "src": "assets/icon-512.png", "size": "512x512" },
-    { "src": "assets/icon-256.png", "size": "256x256" },
-    { "src": "assets/icon-128.png", "size": "128x128" },
-    { "src": "assets/icon-64.png", "size": "64x64" },
-    { "src": "assets/icon-32.png", "size": "32x32" }
+    {
+      "src": "assets/icon-512.png",
+      "size": "512x512"
+    },
+    {
+      "src": "assets/icon-256.png",
+      "size": "256x256"
+    },
+    {
+      "src": "assets/icon-128.png",
+      "size": "128x128"
+    },
+    {
+      "src": "assets/icon-64.png",
+      "size": "64x64"
+    },
+    {
+      "src": "assets/icon-32.png",
+      "size": "32x32"
+    }
   ],
   "keywords": [
     "crm",
@@ -44,7 +59,9 @@
     "entry_point": "server/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.js"],
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
       "env": {
         "SUPABASE_URL": "${user_config.supabase_url}",
         "SUPABASE_SECRET_KEY": "${user_config.supabase_secret_key}",
@@ -141,7 +158,11 @@
   },
   "compatibility": {
     "claude_desktop": ">=1.0.0",
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }

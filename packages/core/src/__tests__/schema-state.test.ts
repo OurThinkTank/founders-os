@@ -17,7 +17,7 @@
 // the schema is present and let that decide.
 // ============================================================
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   getSchemaState,
   getSchemaHint,
@@ -64,7 +64,25 @@ const MISSING_TABLE = { error: { code: "PGRST205", message: "Could not find the 
 const MISSING_TABLE_PG = { error: { code: "42P01", message: 'relation "x" does not exist' } };
 const marker = (v: number) => ({ data: { value: String(v) } });
 
+// These tests exercise the DATABASE probe, which only runs once credentials
+// exist. getSchemaState short-circuits to "not_configured" before touching the
+// client when they do not, so without this the fake db below is never reached.
+// The unconfigured path has its own suite in unconfigured-boot.test.ts.
+const CREDS = ["SUPABASE_URL", "SUPABASE_SECRET_KEY"] as const;
+const savedCreds: Record<string, string | undefined> = {};
+
 beforeEach(() => {
+  for (const k of CREDS) savedCreds[k] = process.env[k];
+  process.env.SUPABASE_URL = "https://test.supabase.co";
+  process.env.SUPABASE_SECRET_KEY = "sb_secret_test";
+  resetSchemaStateCache();
+});
+
+afterEach(() => {
+  for (const k of CREDS) {
+    if (savedCreds[k] === undefined) delete process.env[k];
+    else process.env[k] = savedCreds[k] as string;
+  }
   resetSchemaStateCache();
 });
 
