@@ -1,0 +1,8 @@
+<svg width="400" height="400" viewBox="0 0 400 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Simplified F mark for small sizes: annotations dropped, mark enlarged,
+       strokes thickened so it survives 32px. Geometry and hue match icon.svg. -->
+  <rect x="72" y="44" width="256" height="312" rx="12" stroke="#2563EB" stroke-width="15" fill="none"/>
+  <line x1="116" y1="44" x2="116" y2="356" stroke="#2563EB" stroke-width="17"/>
+  <line x1="116" y1="140" x2="300" y2="140" stroke="#2563EB" stroke-width="15"/>
+  <line x1="116" y1="228" x2="248" y2="228" stroke="#2563EB" stroke-width="15"/>
+</svg>

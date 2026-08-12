@@ -13,6 +13,8 @@
 //                     structured Conflict for interactive resolution)
 // ============================================================
 
+import { readEnv } from "../utils/env.js";
+
 /** Auto-detected system timezone, cached at startup. */
 const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -21,9 +23,14 @@ const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
  * 1. FOUNDERS_OS_TIMEZONE env var (explicit override)
  * 2. System timezone via Intl (auto-detected, travels with the laptop)
  * 3. "UTC" (should never happen, but safe fallback)
+ *
+ * Read via readEnv so a blank value falls through to auto-detection
+ * rather than resolving to "", which every Intl call would reject as an
+ * invalid time zone. MCPB install dialogs substitute "" for optional
+ * fields the user left empty; see utils/env.ts.
  */
 function getTz(): string {
-  return process.env.FOUNDERS_OS_TIMEZONE ?? detectedTz ?? "UTC";
+  return readEnv("FOUNDERS_OS_TIMEZONE") ?? detectedTz ?? "UTC";
 }
 
 // ── getLocalTimezone ────────────────────────────────────────

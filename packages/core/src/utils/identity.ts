@@ -15,6 +15,8 @@
 // (replaces the per-file `function getUserId()` pattern)
 // ============================================================
 
+import { readEnv } from "./env.js";
+
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 // ── Placeholder identity ─────────────────────────────────────
@@ -45,15 +47,21 @@ function validateId(value: string, envVar: string): string {
   return value;
 }
 
-/** Validated caller user ID. Throws if the env var contains unsafe characters. */
+/**
+ * Validated caller user ID. Throws if the env var contains unsafe characters.
+ *
+ * Read via readEnv so a blank value falls back to the placeholder instead of
+ * failing the safe-identifier regex. MCPB install dialogs substitute "" for
+ * an optional field the user left empty; see utils/env.ts.
+ */
 export function getUserId(): string {
-  const raw = process.env.FOUNDERS_OS_USER_ID ?? DEFAULT_USER_ID;
+  const raw = readEnv("FOUNDERS_OS_USER_ID") ?? DEFAULT_USER_ID;
   return validateId(raw, "FOUNDERS_OS_USER_ID");
 }
 
 /** Validated company ID. Throws if the env var contains unsafe characters. */
 export function getCompanyId(): string {
-  const raw = process.env.FOUNDERS_OS_COMPANY_ID ?? DEFAULT_COMPANY_ID;
+  const raw = readEnv("FOUNDERS_OS_COMPANY_ID") ?? DEFAULT_COMPANY_ID;
   return validateId(raw, "FOUNDERS_OS_COMPANY_ID");
 }
 
