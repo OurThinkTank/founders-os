@@ -26,11 +26,11 @@ import {
   DEFAULT_USER_ID,
   DEFAULT_COMPANY_ID,
 } from "../utils/identity.js";
-import {
-  readEmbeddingConfigFromEnv,
-  readPrincipalFromEnv,
-  readAgentModelConfigFromEnv,
-} from "../context.js";
+// Note: this release line is proactive-agents-free, so there is no
+// readPrincipalFromEnv / readAgentModelConfigFromEnv to cover here. If those
+// ever land on this line, add blank-value cases for FOUNDERSOS_PRINCIPAL and
+// FOUNDERSOS_AGENT_* alongside the rest.
+import { readEmbeddingConfigFromEnv } from "../context.js";
 import { getLocalTimezone } from "../tools/dates.js";
 
 // Every var the MCPB manifest maps into the server environment, plus the
@@ -45,13 +45,8 @@ const MANAGED = [
   "EMBEDDING_RATE_LIMIT",
   "EMBEDDING_RATE_WINDOW",
   "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
   "AWS_DEFAULT_REGION",
   "OLLAMA_BASE_URL",
-  "FOUNDERSOS_PRINCIPAL",
-  "FOUNDERSOS_AGENT_PROVIDER",
-  "FOUNDERSOS_AGENT_MODEL",
-  "FOUNDERSOS_AGENT_MAX_TOKENS",
 ] as const;
 
 /** Set every managed var to the given value, or delete when undefined. */
@@ -200,27 +195,8 @@ describe("blank env vars do not break startup (MCPB install with optional fields
     ).not.toThrow();
   });
 
-  it("principal defaults to interactive", () => {
-    setAll("");
-    expect(readPrincipalFromEnv()).toBe("interactive");
-  });
 
-  it("agent model config reads as unprovisioned, not as a bad provider", () => {
-    setAll("");
-    // "" must mean "no model provisioned" (undefined), not an unknown
-    // provider error, otherwise the runner cannot fall back to refusing.
-    expect(() => readAgentModelConfigFromEnv()).not.toThrow();
-    expect(readAgentModelConfigFromEnv()).toBeUndefined();
-  });
 
-  it("a blank agent model still resolves the provider default", () => {
-    setAll("");
-    process.env.FOUNDERSOS_AGENT_PROVIDER = "anthropic";
-    const cfg = readAgentModelConfigFromEnv();
-    expect(cfg?.model).toBe("claude-sonnet-4-6");
-    expect(cfg?.maxTokens).toBe(4096);
-    expect(cfg?.anthropicApiKey).toBeUndefined();
-  });
 
   it("real values still win over the defaults after trimming", () => {
     setAll("");
