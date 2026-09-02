@@ -29,6 +29,7 @@ import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResol
 import { tagFilterParams, resolveTagList } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { liveTasks } from "../filters.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
 //   - validateTags(ctx, ...) (tags-domain refactor 2026-05-28).
@@ -310,13 +311,10 @@ export const taskTools: ToolMap = {
       }
 
       // Check if any tasks are blocked by this one
-      const { data: dependents } = await ctx.db
-        .from("tasks")
-        .select("id, title, status")
+      const { data: dependents } = await liveTasks(ctx.db, "id, title, status")
         .eq("blocked_by_task_id", task_id)
         .eq("company_id", ctx.companyId)
-        .neq("status", "done")
-        .is("deleted_at", null);
+        .neq("status", "done");
 
       return {
         task,
@@ -577,13 +575,10 @@ export const taskTools: ToolMap = {
       }
 
       // Check for tasks that were blocked by this one
-      const { data: unblocked } = await ctx.db
-        .from("tasks")
-        .select("id, title, status, assigned_to")
+      const { data: unblocked } = await liveTasks(ctx.db, "id, title, status, assigned_to")
         .eq("blocked_by_task_id", task_id)
         .eq("company_id", ctx.companyId)
-        .neq("status", "done")
-        .is("deleted_at", null);
+        .neq("status", "done");
 
       const result: Record<string, unknown> = { success: true, task };
       if (store_as_memory) {
@@ -631,8 +626,8 @@ export const taskTools: ToolMap = {
 
       // Gather linked data counts
       const [depsRes, notesRes, linksRes] = await Promise.all([
-        ctx.db.from("tasks").select("id", { count: "exact", head: true })
-          .eq("blocked_by_task_id", task_id).eq("company_id", ctx.companyId).neq("status", "done").is("deleted_at", null),
+        liveTasks(ctx.db, "id", { count: "exact", head: true })
+          .eq("blocked_by_task_id", task_id).eq("company_id", ctx.companyId).neq("status", "done"),
         ctx.db.from("task_notes").select("id", { count: "exact", head: true }).eq("task_id", task_id),
         ctx.db.from("task_links").select("id", { count: "exact", head: true }).eq("task_id", task_id).eq("company_id", ctx.companyId),
       ]);
@@ -788,13 +783,9 @@ export const taskTools: ToolMap = {
           return empty;
         }
 
-        let q = ctx.db
-          .from("tasks")
-          .select("*")
+        let q = liveTasks(ctx.db)
           .in("id", taskIds)
           .eq("company_id", ctx.companyId)
-          .is("archived_at", null)
-          .is("deleted_at", null)
           .order("due_date", { ascending: true, nullsFirst: false })
           .limit(params.limit ?? 50);
 
@@ -807,12 +798,8 @@ export const taskTools: ToolMap = {
       }
 
       // Standard query
-      let query = ctx.db
-        .from("tasks")
-        .select("*")
+      let query = liveTasks(ctx.db)
         .eq("company_id", ctx.companyId)
-        .is("archived_at", null)
-        .is("deleted_at", null)
         .order("due_date", { ascending: true, nullsFirst: false })
         .limit(params.limit ?? 50);
 
@@ -1032,13 +1019,9 @@ export const taskTools: ToolMap = {
       if (taskIds.length === 0) return { tasks: [], count: 0 };
 
       // FIX NEW-03: add company_id guard (service role bypasses RLS).
-      let query = ctx.db
-        .from("tasks")
-        .select("*")
+      let query = liveTasks(ctx.db)
         .in("id", taskIds)
         .eq("company_id", ctx.companyId)
-        .is("archived_at", null)
-        .is("deleted_at", null)
         .order("due_date", { ascending: true, nullsFirst: false })
         .limit(limit);
 
@@ -1172,8 +1155,7 @@ export const taskTools: ToolMap = {
 
       // Each query is built fully inline to keep Supabase types tractable.
       const buildOverdue = () => {
-        const q = ctx.db.from("tasks").select("*").eq("company_id", ctx.companyId)
-          .is("archived_at", null).is("deleted_at", null);
+        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
         const scoped = scope === "personal"
           ? q.eq("scope", "personal").eq("created_by", ctx.userId)
           : scope === "org"
@@ -1188,8 +1170,7 @@ export const taskTools: ToolMap = {
       };
 
       const buildDueToday = () => {
-        const q = ctx.db.from("tasks").select("*").eq("company_id", ctx.companyId)
-          .is("archived_at", null).is("deleted_at", null);
+        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
         const scoped = scope === "personal"
           ? q.eq("scope", "personal").eq("created_by", ctx.userId)
           : scope === "org"
@@ -1199,8 +1180,7 @@ export const taskTools: ToolMap = {
       };
 
       const buildUpcoming = () => {
-        const q = ctx.db.from("tasks").select("*").eq("company_id", ctx.companyId)
-          .is("archived_at", null).is("deleted_at", null);
+        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
         const scoped = scope === "personal"
           ? q.eq("scope", "personal").eq("created_by", ctx.userId)
           : scope === "org"
@@ -1215,11 +1195,8 @@ export const taskTools: ToolMap = {
       };
 
       const buildOpen = () => {
-        const q = ctx.db
-          .from("tasks")
-          .select("status, assigned_to, priority, blocked_by_task_id")
-          .eq("company_id", ctx.companyId)
-          .is("archived_at", null).is("deleted_at", null);
+        const q = liveTasks(ctx.db, "status, assigned_to, priority, blocked_by_task_id")
+          .eq("company_id", ctx.companyId);
         const scoped = scope === "personal"
           ? q.eq("scope", "personal").eq("created_by", ctx.userId)
           : scope === "org"
@@ -1229,8 +1206,7 @@ export const taskTools: ToolMap = {
       };
 
       const buildAiTasks = () => {
-        const q = ctx.db.from("tasks").select("*").eq("company_id", ctx.companyId)
-          .is("archived_at", null).is("deleted_at", null);
+        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
         const scoped = scope === "personal"
           ? q.eq("scope", "personal").eq("created_by", ctx.userId)
           : scope === "org"

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getLocalDateStr } from "../dates.js";
+import { liveTasks } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
 
@@ -70,11 +71,8 @@ export const dashboardTools = {
           .select("customer_type, customer_phase")
           .eq("company_id", ctx.companyId)
           .is("deleted_at", null),
-        ctx.db
-          .from("tasks")
-          .select("due_date, title, status")
+        liveTasks(ctx.db, "due_date, title, status")
           .eq("company_id", ctx.companyId)
-          .is("deleted_at", null)
           .neq("status", "done")
           .order("due_date", { ascending: true }),
       ]);
@@ -90,12 +88,9 @@ export const dashboardTools = {
       // convention uniform across the file.
       const [overdueRes, upcomingRes] = await Promise.all([
         linkedTaskIds.length > 0
-          ? ctx.db
-              .from("tasks")
-              .select("*, task_links!inner(entity_type, entity_id)")
+          ? liveTasks(ctx.db, "*, task_links!inner(entity_type, entity_id)")
               .in("id", linkedTaskIds)
               .eq("company_id", ctx.companyId)
-              .is("deleted_at", null)
               .lt("due_date", today)
               .not("due_date", "is", null)
               .neq("status", "done")
@@ -104,12 +99,9 @@ export const dashboardTools = {
           : Promise.resolve({ data: [] }),
 
         linkedTaskIds.length > 0
-          ? ctx.db
-              .from("tasks")
-              .select("*, task_links!inner(entity_type, entity_id)")
+          ? liveTasks(ctx.db, "*, task_links!inner(entity_type, entity_id)")
               .in("id", linkedTaskIds)
               .eq("company_id", ctx.companyId)
-              .is("deleted_at", null)
               .gte("due_date", today)
               .lte("due_date", windowEnd)
               .neq("status", "done")

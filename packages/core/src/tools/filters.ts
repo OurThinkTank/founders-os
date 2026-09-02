@@ -38,3 +38,18 @@ export function resolveTagList(tag?: string, tags?: string[]): string[] | null {
   if (tag) return [tag];
   return null;
 }
+
+
+// Starts a read of the tasks table with archived and soft-deleted rows
+// already excluded. Chain any other filters onto the result as usual.
+export function liveTasks(
+  db: { from(table: string): { select(columns: string, options?: unknown): any } },
+  columns = "*",
+  options?: { count?: "exact" | "planned" | "estimated"; head?: boolean }
+): any {
+  return db
+    .from("tasks")
+    .select(columns, options)
+    .is("archived_at", null)
+    .is("deleted_at", null);
+}

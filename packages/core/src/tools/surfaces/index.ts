@@ -28,6 +28,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { getLocalDateStr, getLocalTime, getTimeOfDay, getLocalTimezone } from "../dates.js";
+import { liveTasks } from "../filters.js";
 import { getFinancialAccess, financialPermissionError } from "../financial/access.js";
 import { RENDERING_CONTRACT, RENDERING_CONTRACT_VERSION } from "../../contract.js";
 import { getSchemaHint } from "../../schema-state.js";
@@ -299,13 +300,13 @@ export const surfaceTools: ToolMap = {
 
       let openTasks: unknown[] = [];
       if (taskIds.length > 0) {
-        const { data } = await ctx.db
-          .from("tasks")
-          .select("id, title, status, priority, assigned_to, due_date, tags, blocked_by_task_id")
+        const { data } = await liveTasks(
+          ctx.db,
+          "id, title, status, priority, assigned_to, due_date, tags, blocked_by_task_id"
+        )
           .in("id", taskIds)
           .eq("company_id", ctx.companyId)
           .neq("status", "done")
-          .is("deleted_at", null)
           .order("due_date", { ascending: true, nullsFirst: false });
         openTasks = data ?? [];
       }
@@ -855,13 +856,10 @@ export const surfaceTools: ToolMap = {
       const stuckFields = "id,title,status,priority,assigned_to,due_date,updated_at,tags,blocked_reason,blocked_by_task_id";
 
       // 1. Stale in_progress tasks (updated_at older than threshold)
-      let staleQuery = ctx.db
-        .from("tasks")
-        .select(stuckFields)
+      let staleQuery = liveTasks(ctx.db, stuckFields)
         .eq("company_id", ctx.companyId)
         .eq("status", "in_progress")
-        .lt("updated_at", staleThreshold)
-        .is("deleted_at", null);
+        .lt("updated_at", staleThreshold);
 
       if (scope === "personal") {
         staleQuery = staleQuery.eq("scope", "personal").eq("created_by", userId);
@@ -872,12 +870,9 @@ export const surfaceTools: ToolMap = {
       }
 
       // 2. All blocked tasks
-      let blockedQuery = ctx.db
-        .from("tasks")
-        .select(stuckFields)
+      let blockedQuery = liveTasks(ctx.db, stuckFields)
         .eq("company_id", ctx.companyId)
-        .eq("status", "blocked")
-        .is("deleted_at", null);
+        .eq("status", "blocked");
 
       if (scope === "personal") {
         blockedQuery = blockedQuery.eq("scope", "personal").eq("created_by", userId);
@@ -888,14 +883,11 @@ export const surfaceTools: ToolMap = {
       }
 
       // 3. Overdue tasks (FIX NEW-06: was todo-only; now includes in_progress).
-      let overdueQuery = ctx.db
-        .from("tasks")
-        .select(stuckFields)
+      let overdueQuery = liveTasks(ctx.db, stuckFields)
         .eq("company_id", ctx.companyId)
         .in("status", ["todo", "in_progress"])
         .lt("due_date", todayStr)
-        .not("due_date", "is", null)
-        .is("deleted_at", null);
+        .not("due_date", "is", null);
 
       if (scope === "personal") {
         overdueQuery = overdueQuery.eq("scope", "personal").eq("created_by", userId);
