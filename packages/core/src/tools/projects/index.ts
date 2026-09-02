@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { conflict } from "../conflict.js";
+import { liveTasks } from "../filters.js";
 import { toSlug } from "../tags/index.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import type { Render } from "../../types/render.js";
@@ -235,34 +236,22 @@ export const projectTools: ToolMap = {
           if (!tagName) return { ...p, task_counts: null };
 
           const [todoRes, ipRes, blockedRes, doneRes] = await Promise.all([
-            ctx.db
-              .from("tasks")
-              .select("id", { count: "exact", head: true })
+            liveTasks(ctx.db, "id", { count: "exact", head: true })
               .eq("company_id", companyId)
               .eq("status", "todo")
-              .contains("tags", [tagName])
-              .is("deleted_at", null),
-            ctx.db
-              .from("tasks")
-              .select("id", { count: "exact", head: true })
+              .contains("tags", [tagName]),
+            liveTasks(ctx.db, "id", { count: "exact", head: true })
               .eq("company_id", companyId)
               .eq("status", "in_progress")
-              .contains("tags", [tagName])
-              .is("deleted_at", null),
-            ctx.db
-              .from("tasks")
-              .select("id", { count: "exact", head: true })
+              .contains("tags", [tagName]),
+            liveTasks(ctx.db, "id", { count: "exact", head: true })
               .eq("company_id", companyId)
               .eq("status", "blocked")
-              .contains("tags", [tagName])
-              .is("deleted_at", null),
-            ctx.db
-              .from("tasks")
-              .select("id", { count: "exact", head: true })
+              .contains("tags", [tagName]),
+            liveTasks(ctx.db, "id", { count: "exact", head: true })
               .eq("company_id", companyId)
               .eq("status", "done")
-              .contains("tags", [tagName])
-              .is("deleted_at", null),
+              .contains("tags", [tagName]),
           ]);
 
           return {
@@ -342,54 +331,42 @@ export const projectTools: ToolMap = {
 
       // Fetch tasks by tag, grouped by status
       const [todoTasks, ipTasks, blockedTasks, doneTasks] = await Promise.all([
-        ctx.db
-          .from("tasks")
-          .select("id, title, priority, due_date, assigned_to, created_at")
+        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, created_at")
           .eq("company_id", companyId)
           .eq("status", "todo")
           .contains("tags", [tagName])
-          .is("deleted_at", null)
           .order("created_at", { ascending: false })
           .limit(10),
-        ctx.db
-          .from("tasks")
-          .select("id, title, priority, due_date, assigned_to, created_at")
+        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, created_at")
           .eq("company_id", companyId)
           .eq("status", "in_progress")
           .contains("tags", [tagName])
-          .is("deleted_at", null)
           .order("created_at", { ascending: false })
           .limit(10),
-        ctx.db
-          .from("tasks")
-          .select("id, title, priority, due_date, assigned_to, blocked_reason, created_at")
+        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, blocked_reason, created_at")
           .eq("company_id", companyId)
           .eq("status", "blocked")
           .contains("tags", [tagName])
-          .is("deleted_at", null)
           .order("created_at", { ascending: false })
           .limit(10),
-        ctx.db
-          .from("tasks")
-          .select("id, title, completed_at")
+        liveTasks(ctx.db, "id, title, completed_at")
           .eq("company_id", companyId)
           .eq("status", "done")
           .contains("tags", [tagName])
-          .is("deleted_at", null)
           .order("completed_at", { ascending: false })
           .limit(5),
       ]);
 
       // Count totals (the queries above are limited)
       const [todoCount, ipCount, blockedCount, doneCount] = await Promise.all([
-        ctx.db.from("tasks").select("id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "todo").contains("tags", [tagName]).is("deleted_at", null),
-        ctx.db.from("tasks").select("id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "in_progress").contains("tags", [tagName]).is("deleted_at", null),
-        ctx.db.from("tasks").select("id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "blocked").contains("tags", [tagName]).is("deleted_at", null),
-        ctx.db.from("tasks").select("id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "done").contains("tags", [tagName]).is("deleted_at", null),
+        liveTasks(ctx.db, "id", { count: "exact", head: true })
+          .eq("company_id", companyId).eq("status", "todo").contains("tags", [tagName]),
+        liveTasks(ctx.db, "id", { count: "exact", head: true })
+          .eq("company_id", companyId).eq("status", "in_progress").contains("tags", [tagName]),
+        liveTasks(ctx.db, "id", { count: "exact", head: true })
+          .eq("company_id", companyId).eq("status", "blocked").contains("tags", [tagName]),
+        liveTasks(ctx.db, "id", { count: "exact", head: true })
+          .eq("company_id", companyId).eq("status", "done").contains("tags", [tagName]),
       ]);
 
       // Fetch customers by tag
@@ -506,13 +483,10 @@ export const projectTools: ToolMap = {
         !proceedArchive &&
         current.tag_name
       ) {
-        const { count } = await ctx.db
-          .from("tasks")
-          .select("id", { count: "exact", head: true })
+        const { count } = await liveTasks(ctx.db, "id", { count: "exact", head: true })
           .eq("company_id", companyId)
           .in("status", ["todo", "in_progress", "blocked"])
-          .contains("tags", [current.tag_name])
-          .is("deleted_at", null);
+          .contains("tags", [current.tag_name]);
 
         if ((count ?? 0) > 0) {
           return conflict(
@@ -762,13 +736,10 @@ export const projectTools: ToolMap = {
       // Count linked data
       const [taskRes, custRes] = await Promise.all([
         tagName
-          ? ctx.db
-              .from("tasks")
-              .select("id", { count: "exact", head: true })
+          ? liveTasks(ctx.db, "id", { count: "exact", head: true })
               .eq("company_id", companyId)
               .in("status", ["todo", "in_progress", "blocked"])
               .contains("tags", [tagName])
-              .is("deleted_at", null)
           : Promise.resolve({ count: 0 }),
         tagName
           ? ctx.db

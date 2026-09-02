@@ -184,7 +184,10 @@ describe("NEW-03 list_entity_tasks — tasks query must include company_id", () 
     // after the BUG-05 work added `const companyId = getCompanyId();` and
     // an extra .eq() to the task_links read inside the same handler.
     const handlerBody = source.slice(handlerStart, handlerStart + 2500);
-    const tasksQueryIdx = handlerBody.indexOf('.from("tasks")');
+    const tasksQueryIdx = Math.max(
+      handlerBody.indexOf('.from("tasks")'),
+      handlerBody.indexOf("liveTasks(")
+    );
     expect(tasksQueryIdx).toBeGreaterThan(-1);
     const tasksQueryRegion = handlerBody.slice(tasksQueryIdx, tasksQueryIdx + 300);
     expect(tasksQueryRegion).toContain("company_id");
@@ -211,7 +214,7 @@ describe("BUG-02b complete_task — UPDATE must include company_id guard", () =>
   it("tasks/index.ts complete_task UPDATE query must include company_id", () => {
     const source = readSource("tasks/index.ts");
     const handlerStart = source.indexOf("complete_task:");
-    const handlerBody = source.slice(handlerStart, handlerStart + 4000);
+    const handlerBody = source.slice(handlerStart, handlerStart + 5500);
     const updateIdx = handlerBody.indexOf(".update({");
     expect(updateIdx).toBeGreaterThan(-1);
     const updateRegion = handlerBody.slice(updateIdx, updateIdx + 200);
@@ -311,7 +314,7 @@ describe("NEW-05 complete_task — must return already_done:true when already do
   it("tasks/index.ts complete_task must include already_done response path", () => {
     const source = readSource("tasks/index.ts");
     const handlerStart = source.indexOf("complete_task:");
-    const handlerBody = source.slice(handlerStart, handlerStart + 2500);
+    const handlerBody = source.slice(handlerStart, handlerStart + 3200);
     expect(handlerBody).toContain("already_done");
   });
 });
@@ -417,7 +420,7 @@ describe("BUG-05b get_entity_card — junction and child reads must scope compan
 
   it("tasks fetch by id list must filter by company_id", () => {
     const block = handlerBody.match(
-      /\.from\("tasks"\)\s*\.select[\s\S]{0,500}?\.in\("id", taskIds\)[\s\S]{0,300}?nullsFirst: false/
+      /(?:\.from\("tasks"\)\s*\.select|liveTasks\()[\s\S]{0,500}?\.in\("id", taskIds\)[\s\S]{0,300}?nullsFirst: false/
     );
     expect(block).not.toBeNull();
     expect(block![0].includes(`eq("company_id", companyId)`) || block![0].includes(`eq("company_id", ctx.companyId)`)).toBe(true);
