@@ -19,6 +19,7 @@ import {
   PinFeedInput,
   RefreshFeedsInput,
 } from "./types.js";
+import { DESTRUCTIVE, EDIT, NETWORK_WRITE, READ_ONLY } from "../annotations.js";
 
 export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   subscribe_feed: {
     title: "Subscribe to Feed",
+    annotations: NETWORK_WRITE,
     description:
       "Subscribe to an RSS, Atom, or JSON Feed. Fetches once to populate metadata " +
       "if this is the first subscription to this URL in the company. Tags classify " +
@@ -130,6 +132,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   unsubscribe_feed: {
     title: "Unsubscribe from Feed",
+    annotations: DESTRUCTIVE,
     description:
       "Unsubscribe from a feed. Only removes your subscription - other team members " +
       "and the shared catalog entry are not affected. Bookmarks from this feed are preserved.",
@@ -175,6 +178,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_feeds: {
     title: "List Feeds",
+    annotations: READ_ONLY,
     description:
       "List all subscribed RSS feeds, optionally filtered by tag or pinned status. " +
       "Returns feed metadata from the shared catalog along with per-user tags and pinned status.",
@@ -232,6 +236,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   pin_feed: {
     title: "Pin Feed",
+    annotations: EDIT,
     description:
       "Pin a feed so it appears in the morning briefing. Pinned feeds are fetched " +
       "during session start to generate headline summaries.",
@@ -255,6 +260,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   unpin_feed: {
     title: "Unpin Feed",
+    annotations: EDIT,
     description:
       "Unpin a feed so it no longer appears in the morning briefing. " +
       "The feed remains subscribed - you just won't see headlines in session start.",
@@ -278,6 +284,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   import_starter_feeds: {
     title: "Import Starter Feeds",
+    annotations: NETWORK_WRITE,
     description:
       "Import a curated starter feed list covering tech, AI, business, news, crypto, " +
       "engineering, and more. Skips any feeds you're already subscribed to. " +
@@ -392,6 +399,7 @@ export const feedTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   refresh_feeds: {
     title: "Refresh Feeds",
+    annotations: NETWORK_WRITE,
     description:
       "Force-refresh feed data by clearing the cache. Optionally refresh a specific feed " +
       "and update its catalog metadata. If no feed_id is given, clears the entire cache.",

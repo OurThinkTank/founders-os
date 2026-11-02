@@ -2,10 +2,12 @@ import { z } from "zod";
 import { sanitizeSearchQuery } from "../../utils/sanitize.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 export const contactTools = {
   add_contact: {
     title: "Add Contact",
+    annotations: ADDITIVE,
     description:
       "Add a contact person to a customer organization. Contacts are individuals you interact with at that company.",
     parameters: z.object({
@@ -63,6 +65,7 @@ export const contactTools = {
 
   update_contact: {
     title: "Update Contact",
+    annotations: EDIT,
     description: "Update a contact's details.",
     parameters: z.object({
       contact_id: z.string().uuid().describe("Contact UUID"),
@@ -118,6 +121,7 @@ export const contactTools = {
 
   search_contacts: {
     title: "Search Contacts",
+    annotations: READ_ONLY,
     description:
       "Search for contacts by name, email, phone, or role. Returns matching contacts with their customer/organization info. Use this when someone asks about a person by name.",
     parameters: z.object({
@@ -178,6 +182,7 @@ export const contactTools = {
 
   remove_contact: {
     title: "Remove Contact",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a contact by archiving (marks as inactive, recoverable) or permanently deleting. " +
       "On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL options. " +

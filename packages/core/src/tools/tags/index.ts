@@ -18,6 +18,7 @@ import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Note: writeAuditLog still reads env vars; deferred to the audit-pass
 // workstream. The tool-context lint only forbids createServiceClient /
@@ -334,6 +335,7 @@ export const tagTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_tags: {
     title: "List Tags",
+    annotations: READ_ONLY,
     description:
       "List all registered tags for the current company. Returns name, slug, color, " +
       "and description for each tag. Use this to see what tags are available before " +
@@ -373,6 +375,7 @@ export const tagTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   preview_tags: {
     title: "Preview Tags",
+    annotations: READ_ONLY,
     description:
       "Validate tag names and return the same warnings tagging would produce " +
       "(bare contact name, customer/org match, missing ! or # prefix, typo) " +
@@ -394,6 +397,7 @@ export const tagTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   create_tag: {
     title: "Create Tag",
+    annotations: ADDITIVE,
     description:
       "Register a new tag in the tag registry. The slug (lowercase, hyphenated form) " +
       "must be unique per company. Returns an error if a tag with the same slug already exists.",
@@ -460,6 +464,7 @@ export const tagTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   rename_tag: {
     title: "Rename Tag",
+    annotations: EDIT,
     description:
       "Rename a registered tag. Updates the display name and slug. " +
       "If the tag is in use and propagate is not explicitly set, a `conflict` response " +
@@ -513,6 +518,7 @@ export const tagTools: ToolMap = {
       // If cascade was not explicitly set, check usage and ask
       if (doCascade === undefined) {
         const [taskRes, custRes, acctRes, catRes, txRes] = await Promise.all([
+          // task-visibility-lint: allow - count for a tag cascade that rewrites every task, shown before approval
           supabase
             .from("tasks")
             .select("id", { count: "exact", head: true })
@@ -725,6 +731,7 @@ export const tagTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_tag: {
     title: "Remove Tag",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a tag by archiving (hides from active views, recoverable) or permanently deleting. " +
       "On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL options. " +
@@ -800,6 +807,7 @@ export const tagTools: ToolMap = {
 
       // Count usage for linked_data
       const [taskRes, custRes, acctRes, catRes, txRes] = await Promise.all([
+        // task-visibility-lint: allow - count for a tag cascade that rewrites every task, shown before approval
         supabase
           .from("tasks")
           .select("id", { count: "exact", head: true })

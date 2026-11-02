@@ -22,6 +22,7 @@ import { isConflictResponse } from "./conflict.js";
 import { RENDERING_CONTRACT_SHORT } from "../contract.js";
 import { getSetupGuidanceForFailure } from "../schema-state.js";
 import type { ToolContext } from "../types/context.js";
+import type { ToolHints } from "./annotations.js";
 
 /**
  * Tool handlers come in two shapes during the ToolContext migration:
@@ -52,6 +53,7 @@ export type ContextualHandler = (
 
 export type ToolDefinition = {
   title: string;
+  annotations: ToolHints;
   description: string;
   parameters: z.ZodObject<z.ZodRawShape>;
   handler: LegacyHandler | ContextualHandler;
@@ -99,7 +101,7 @@ export function registerToolMap(
   ctx?: ToolContext
 ): void {
   for (const [name, tool] of Object.entries(tools)) {
-    const { title, description, parameters, handler } = tool;
+    const { title, annotations, description, parameters, handler } = tool;
     const isContextual = handler.length >= 2;
 
     if (isContextual && !ctx) {
@@ -115,6 +117,7 @@ export function registerToolMap(
         title,
         description,
         inputSchema: parameters.shape,
+        annotations,
       },
       async (params) => {
         try {

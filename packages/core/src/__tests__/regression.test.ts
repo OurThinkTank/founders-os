@@ -186,11 +186,15 @@ describe("NEW-03 list_entity_tasks — tasks query must include company_id", () 
     const handlerBody = source.slice(handlerStart, handlerStart + 2500);
     const tasksQueryIdx = Math.max(
       handlerBody.indexOf('.from("tasks")'),
-      handlerBody.indexOf("liveTasks(")
+      handlerBody.indexOf("liveTasks("),
+      handlerBody.indexOf("visibleTasks(")
     );
     expect(tasksQueryIdx).toBeGreaterThan(-1);
     const tasksQueryRegion = handlerBody.slice(tasksQueryIdx, tasksQueryIdx + 300);
-    expect(tasksQueryRegion).toContain("company_id");
+    // visibleTasks() filters by company_id itself (see filters.test.ts).
+    expect(
+      tasksQueryRegion.includes("company_id") || tasksQueryRegion.startsWith("visibleTasks(")
+    ).toBe(true);
   });
 });
 
@@ -200,7 +204,7 @@ describe("BUG-02a update_task — UPDATE must include company_id guard", () => {
   it("tasks/index.ts update_task UPDATE query must include company_id", () => {
     const source = readSource("tasks/index.ts");
     const handlerStart = source.indexOf("update_task:");
-    const handlerBody = source.slice(handlerStart, handlerStart + 5000);
+    const handlerBody = source.slice(handlerStart, handlerStart + 7000);
     const updateIdx = handlerBody.indexOf(".update(updates)");
     expect(updateIdx).toBeGreaterThan(-1);
     const updateRegion = handlerBody.slice(updateIdx, updateIdx + 200);
@@ -260,10 +264,9 @@ describe("2022-06a get_task — SELECT must include company_id guard", () => {
     const source = readSource("tasks/index.ts");
     const handlerStart = source.indexOf("// get_task\n  // ──");
     const handlerBody = source.slice(handlerStart, handlerStart + 1200);
-    const selectIdx = handlerBody.indexOf('.from("tasks").select("*")');
+    // findVisibleTask() filters by company_id itself (see filters.test.ts).
+    const selectIdx = handlerBody.indexOf('findVisibleTask(ctx, task_id, "*")');
     expect(selectIdx).toBeGreaterThan(-1);
-    const selectRegion = handlerBody.slice(selectIdx, selectIdx + 200);
-    expect(selectRegion).toContain("company_id");
   });
 });
 
@@ -420,10 +423,15 @@ describe("BUG-05b get_entity_card — junction and child reads must scope compan
 
   it("tasks fetch by id list must filter by company_id", () => {
     const block = handlerBody.match(
-      /(?:\.from\("tasks"\)\s*\.select|liveTasks\()[\s\S]{0,500}?\.in\("id", taskIds\)[\s\S]{0,300}?nullsFirst: false/
+      /(?:\.from\("tasks"\)\s*\.select|liveTasks\(|visibleTasks\()[\s\S]{0,500}?\.in\("id", taskIds\)[\s\S]{0,300}?nullsFirst: false/
     );
     expect(block).not.toBeNull();
-    expect(block![0].includes(`eq("company_id", companyId)`) || block![0].includes(`eq("company_id", ctx.companyId)`)).toBe(true);
+    // visibleTasks() filters by company_id itself (see filters.test.ts).
+    expect(
+      block![0].startsWith("visibleTasks(") ||
+        block![0].includes(`eq("company_id", companyId)`) ||
+        block![0].includes(`eq("company_id", ctx.companyId)`)
+    ).toBe(true);
   });
 
   it("interactions-by-customer fetch must filter by company_id", () => {

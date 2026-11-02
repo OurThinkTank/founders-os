@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../tools/register.js";
+import { READ_ONLY } from "../tools/annotations.js";
 
 // ── Fake MCP server ──────────────────────────────────────────
 // Captures calls to registerTool() so we can inspect
@@ -69,12 +70,14 @@ describe("registerToolMap — tool registration", () => {
     const tools: ToolMap = {
       tool_alpha: {
         title: "Alpha",
+        annotations: READ_ONLY,
         description: "First tool",
         parameters: z.object({}),
         handler: async () => ({}),
       },
       tool_beta: {
         title: "Beta",
+        annotations: READ_ONLY,
         description: "Second tool",
         parameters: z.object({}),
         handler: async () => ({}),
@@ -91,6 +94,7 @@ describe("registerToolMap — tool registration", () => {
     const tools: ToolMap = {
       my_tool: {
         title: "My Great Tool",
+        annotations: READ_ONLY,
         description: "Does something useful",
         parameters: z.object({}),
         handler: async () => ({}),
@@ -115,6 +119,7 @@ describe("registerToolMap — tool registration", () => {
         `tool_${i}`,
         {
           title: `Tool ${i}`,
+          annotations: READ_ONLY,
           description: `Tool number ${i}`,
           parameters: z.object({}),
           handler: async () => ({ index: i }),
@@ -139,6 +144,7 @@ describe("registerToolMap — success path envelope", () => {
     registerToolMap(server as never, {
       greet: {
         title: "Greet",
+        annotations: READ_ONLY,
         description: "Says hello",
         parameters: z.object({ name: z.string() }),
         handler: async ({ name }: { name: string }) => ({ greeting: `Hello ${name}` }),
@@ -154,6 +160,7 @@ describe("registerToolMap — success path envelope", () => {
     registerToolMap(server as never, {
       data: {
         title: "Data",
+        annotations: READ_ONLY,
         description: "Returns data",
         parameters: z.object({}),
         handler: async () => ({ count: 42, items: ["a", "b"] }),
@@ -171,6 +178,7 @@ describe("registerToolMap — success path envelope", () => {
     registerToolMap(server as never, {
       echo: {
         title: "Echo",
+        annotations: READ_ONLY,
         description: "Echoes params",
         parameters: z.object({ value: z.string() }),
         handler: async (params) => {
@@ -189,6 +197,7 @@ describe("registerToolMap — success path envelope", () => {
     registerToolMap(server as never, {
       ok: {
         title: "OK",
+        annotations: READ_ONLY,
         description: "Always succeeds",
         parameters: z.object({}),
         handler: async () => ({ success: true }),
@@ -209,6 +218,7 @@ describe("registerToolMap — error path envelope", () => {
     registerToolMap(server as never, {
       broken: {
         title: "Broken",
+        annotations: READ_ONLY,
         description: "Always throws",
         parameters: z.object({}),
         handler: async () => { throw new Error("database unavailable"); },
@@ -223,6 +233,7 @@ describe("registerToolMap — error path envelope", () => {
     registerToolMap(server as never, {
       broken: {
         title: "Broken",
+        annotations: READ_ONLY,
         description: "Always throws",
         parameters: z.object({}),
         handler: async () => { throw new Error("unique constraint violated"); },
@@ -238,6 +249,7 @@ describe("registerToolMap — error path envelope", () => {
     registerToolMap(server as never, {
       weird: {
         title: "Weird",
+        annotations: READ_ONLY,
         description: "Throws a non-Error",
         parameters: z.object({}),
         handler: async () => { throw "not an error object"; },
@@ -254,6 +266,7 @@ describe("registerToolMap — error path envelope", () => {
     registerToolMap(server as never, {
       broken: {
         title: "Broken",
+        annotations: READ_ONLY,
         description: "Always throws",
         parameters: z.object({}),
         handler: async () => { throw new Error("boom"); },
@@ -269,6 +282,7 @@ describe("registerToolMap — error path envelope", () => {
     registerToolMap(server as never, {
       async_fail: {
         title: "Async Fail",
+        annotations: READ_ONLY,
         description: "Returns a rejected promise",
         parameters: z.object({}),
         handler: () => Promise.reject(new Error("async rejection")),
@@ -290,6 +304,7 @@ describe("registerToolMap — enrichDates integration", () => {
     registerToolMap(server as never, {
       dated: {
         title: "Dated",
+        annotations: READ_ONLY,
         description: "Returns a date",
         parameters: z.object({}),
         handler: async () => ({ due_date: "2026-04-30" }),
@@ -308,6 +323,7 @@ describe("registerToolMap — enrichDates integration", () => {
     registerToolMap(server as never, {
       stamped: {
         title: "Stamped",
+        annotations: READ_ONLY,
         description: "Returns a timestamp",
         parameters: z.object({}),
         handler: async () => ({ completed_at: "2026-04-24T14:30:00Z" }),
@@ -324,6 +340,7 @@ describe("registerToolMap — enrichDates integration", () => {
     registerToolMap(server as never, {
       with_id: {
         title: "With ID",
+        annotations: READ_ONLY,
         description: "Returns ID-like fields",
         parameters: z.object({}),
         // IDs sometimes look like dates but must not be enriched (they're in SKIP_KEYS)
@@ -348,6 +365,7 @@ describe("registerToolMap — enrichDates integration", () => {
     registerToolMap(server as never, {
       nested: {
         title: "Nested",
+        annotations: READ_ONLY,
         description: "Returns nested data",
         parameters: z.object({}),
         handler: async () => ({
@@ -366,6 +384,7 @@ describe("registerToolMap — enrichDates integration", () => {
     registerToolMap(server as never, {
       plain: {
         title: "Plain",
+        annotations: READ_ONLY,
         description: "Returns plain text",
         parameters: z.object({}),
         handler: async () => ({ name: "Acme Corp", status: "active" }),
@@ -404,6 +423,7 @@ describe("registerToolMap — contextual handler dispatch", () => {
       {
         ctx_tool: {
           title: "Ctx Tool",
+          annotations: READ_ONLY,
           description: "Receives ctx",
           parameters: z.object({ value: z.string() }),
           handler: async (ctx, params) => {
@@ -426,6 +446,7 @@ describe("registerToolMap — contextual handler dispatch", () => {
       registerToolMap(server as never, {
         ctx_tool: {
           title: "Ctx Tool",
+          annotations: READ_ONLY,
           description: "Needs ctx",
           parameters: z.object({}),
           handler: async (_ctx, _params) => ({}),
@@ -446,6 +467,7 @@ describe("registerToolMap — contextual handler dispatch", () => {
       {
         single_arg: {
           title: "Single Arg",
+          annotations: READ_ONLY,
           description: "Wrongly authored single-arg contextual handler",
           parameters: z.object({}),
           // Intentionally declared with only one parameter.

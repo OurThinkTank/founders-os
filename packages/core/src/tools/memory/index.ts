@@ -19,6 +19,7 @@ import { registerToolMap, type ToolMap } from "../register.js";
 import { conflict } from "../conflict.js";
 import { writeAuditLog } from "../audit.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Tenant scoping: every read, write, and the match_memories RPC scope
 // by company_id (ctx.companyId) as the outer tenant boundary, on top
@@ -160,6 +161,7 @@ export function checkpointWarnings(
 export const memoryTools: ToolMap = {
   memory_store: {
     title: "Memory Store",
+    annotations: ADDITIVE,
     description:
       "Store a specific memory entry. Use scope='org' for team-wide visibility, " +
       "'personal' for caller only. Call this whenever you learn something worth " +
@@ -274,6 +276,7 @@ export const memoryTools: ToolMap = {
 
   memory_recall: {
     title: "Memory Recall",
+    annotations: READ_ONLY,
     description:
       "Semantically search stored memories and return the most relevant results. " +
       "Call at the start of any project session to load prior context.",
@@ -382,6 +385,7 @@ export const memoryTools: ToolMap = {
 
   memory_forget: {
     title: "Memory Forget",
+    annotations: DESTRUCTIVE,
     description:
       "Delete a specific memory entry by its ID. " +
       "For org-scoped memories, a `conflict` response is returned with a preview " +
@@ -465,6 +469,7 @@ export const memoryTools: ToolMap = {
 
   memory_update: {
     title: "Memory Update",
+    annotations: EDIT,
     description:
       "Update an existing memory's content in place. Re-embeds the new content " +
       "for accurate future recall. For org-scoped memories, returns a conflict " +
@@ -609,6 +614,7 @@ export const memoryTools: ToolMap = {
 
   memory_summarize_and_store: {
     title: "Memory Summarize & Store",
+    annotations: ADDITIVE,
     description:
       "Distill a session summary into a memory entry and store it. " +
       "Pass a full narrative description of what happened — the more detail the better. " +

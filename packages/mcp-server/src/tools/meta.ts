@@ -501,6 +501,12 @@ export function registerMetaTools(server: McpServer): void {
     "get_usage_guide",
     {
       title: "Usage Guide",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description:
         "Returns a detailed guide on how to use Founders OS - covering all six domains (CRM, Tasks, Tags, Finance, Feeds, Memory), surface tools, search protocols, common workflows, and tips. Call this when uncertain about how to approach a task.",
       inputSchema: {},
@@ -519,6 +525,12 @@ export function registerMetaTools(server: McpServer): void {
     "show_capabilities",
     {
       title: "Show Capabilities",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description:
         "Returns example prompts and workflows organized by domain (CRM, Tasks, Finance, Feeds, Memory, Surfaces). " +
         "Call this when a user asks 'what can you do?', 'show me what I can do', 'help me get started', " +
@@ -581,6 +593,12 @@ export function registerMetaTools(server: McpServer): void {
     "list_demos",
     {
       title: "List Demos",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description:
         "Returns available interactive demo walkthroughs bundled with Founders OS. " +
         "When called without a name, returns a summary list of available demos. " +
