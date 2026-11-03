@@ -34,6 +34,7 @@ import { registerToolMap, type ToolMap } from "../register.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
 //   - writeAuditLog(ctx, ...) (audit.ts refactor 2026-05-28)
@@ -202,6 +203,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   create_playbook: {
     title: "Create Playbook",
+    annotations: ADDITIVE,
     description:
       "Create a new reusable playbook template. A playbook is an ordered set of steps " +
       "run against a customer to automate project setup. Add steps with add_playbook_step after creation.",
@@ -247,6 +249,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   update_playbook: {
     title: "Update Playbook",
+    annotations: EDIT,
     description:
       "Update a playbook's name, slug, or description. Only provided fields are changed. " +
       "Steps are not affected — use update_playbook_step for those.",
@@ -301,6 +304,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_playbook: {
     title: "Remove Playbook",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a playbook by archiving (hides from active views, recoverable) or permanently deleting. " +
       "On first call, returns a conflict with ARCHIVE / DELETE / CANCEL options. " +
@@ -392,6 +396,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   add_playbook_step: {
     title: "Add Playbook Step",
+    annotations: ADDITIVE,
     description:
       "Add an ordered step to a playbook. Steps are either 'native_task' (created in Founders OS " +
       "when the playbook runs) or 'external_action' (instructions returned for the AI to execute " +
@@ -522,6 +527,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_playbooks: {
     title: "List Playbooks",
+    annotations: READ_ONLY,
     description:
       "List all defined playbooks for this company. Returns name, slug, description, and step count. " +
       "Archived playbooks are hidden by default.",
@@ -583,6 +589,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_playbook: {
     title: "Get Playbook",
+    annotations: READ_ONLY,
     description:
       "Fetch a single playbook with its full ordered step list and connector requirements. " +
       "Use before running to inspect what the playbook will do and which connectors it needs.",
@@ -623,6 +630,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   run_playbook: {
     title: "Run Playbook",
+    annotations: ADDITIVE,
     description:
       "Execute a playbook against a customer. " +
       "Set preflight_only: true to inspect connector requirements and step breakdown WITHOUT executing — " +
@@ -942,6 +950,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_playbook_run: {
     title: "Get Playbook Run",
+    annotations: READ_ONLY,
     description:
       "Fetch the execution log and status of a specific playbook run.",
     parameters: z.object({
@@ -965,6 +974,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_playbook_runs: {
     title: "List Playbook Runs",
+    annotations: READ_ONLY,
     description:
       "List playbook execution history. Optionally filter by playbook or customer.",
     parameters: z.object({
@@ -1018,6 +1028,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   update_playbook_step: {
     title: "Update Playbook Step",
+    annotations: EDIT,
     description:
       "Update any fields on a playbook step. Only provided fields are changed. " +
       "Use to refine a step's title, description, due_offset, assigned_to, or action params.",
@@ -1112,6 +1123,7 @@ export const playbookTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_playbook_step: {
     title: "Remove Playbook Step",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a step from a playbook by archiving (hides from step list, recoverable) " +
       "or permanently deleting. On first call, returns a conflict with ARCHIVE / DELETE / CANCEL options. " +

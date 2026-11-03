@@ -20,14 +20,6 @@ const TOOLS = resolve(SRC, "tools");
  * archived rows.
  */
 const ALLOWED = new Set([
-  // Fetch by id: an archived task stays addressable so it can be
-  // inspected or restored. Includes the blocker lookups.
-  "tools/tasks/index.ts:add_task_note",
-  "tools/tasks/index.ts:complete_task",
-  "tools/tasks/index.ts:get_task",
-  "tools/tasks/index.ts:link_task",
-  "tools/tasks/index.ts:remove_task",
-  "tools/tasks/index.ts:unlink_task",
   // Tag cascade counts: the cascade rewrites archived rows too, so
   // the count shown for approval has to include them.
   "tools/projects/index.ts:create_project",
@@ -38,6 +30,10 @@ const ALLOWED = new Set([
   "tools/surfaces/index.ts:get_weekly_retro",
   // Counts rows to answer "has this install been used".
   "tools/first-run.ts",
+  // The trash: works on archived and soft-deleted rows.
+  "tools/restore.ts",
+  // get_audit_log hides entries by the task's scope, archived or not.
+  "tools/financial/management.ts",
 ]);
 
 /** filters.ts defines liveTasks() itself. */

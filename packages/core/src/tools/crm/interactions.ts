@@ -2,10 +2,12 @@ import { z } from "zod";
 import { conflict } from "../conflict.js";
 import { writeAuditLog } from "../audit.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, READ_ONLY } from "../annotations.js";
 
 export const interactionTools = {
   log_interaction: {
     title: "Log Interaction",
+    annotations: ADDITIVE,
     description:
       "Record an interaction with a customer (email, call, meeting, demo, support ticket, event, or general note).",
     parameters: z.object({
@@ -54,6 +56,7 @@ export const interactionTools = {
 
   list_interactions: {
     title: "List Interactions",
+    annotations: READ_ONLY,
     description: "Get interaction history for a customer, with optional date range and type filter.",
     parameters: z.object({
       customer_id: z.string().uuid().describe("Customer UUID"),
@@ -119,6 +122,7 @@ export const interactionTools = {
 
   remove_interaction: {
     title: "Remove Interaction",
+    annotations: DESTRUCTIVE,
     description:
       "Soft-delete a logged interaction (email, call, meeting, etc.) by its UUID. " +
       "Interactions are append-only touchpoint history, so there is no archive state - " +

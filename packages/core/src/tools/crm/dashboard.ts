@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { getLocalDateStr } from "../dates.js";
-import { liveTasks } from "../filters.js";
+import { visibleTasks } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { READ_ONLY } from "../annotations.js";
 
 export const dashboardTools = {
   get_dashboard: {
     title: "Get Dashboard",
+    annotations: READ_ONLY,
     description:
       "Get a CRM dashboard summary: total customers by type and phase, overdue tasks, " +
       "recent interactions, and upcoming tasks within a 7/14/30-day window. " +
@@ -71,8 +73,7 @@ export const dashboardTools = {
           .select("customer_type, customer_phase")
           .eq("company_id", ctx.companyId)
           .is("deleted_at", null),
-        liveTasks(ctx.db, "due_date, title, status")
-          .eq("company_id", ctx.companyId)
+        visibleTasks(ctx, "due_date, title, status")
           .neq("status", "done")
           .order("due_date", { ascending: true }),
       ]);
@@ -83,14 +84,10 @@ export const dashboardTools = {
       );
 
       // Fetch overdue and upcoming tasks that are linked to customers.
-      // linkedTaskIds was already company-scoped above, but the explicit
-      // .eq("company_id", ...) is defense in depth and keeps the
-      // convention uniform across the file.
       const [overdueRes, upcomingRes] = await Promise.all([
         linkedTaskIds.length > 0
-          ? liveTasks(ctx.db, "*, task_links!inner(entity_type, entity_id)")
+          ? visibleTasks(ctx, "*, task_links!inner(entity_type, entity_id)")
               .in("id", linkedTaskIds)
-              .eq("company_id", ctx.companyId)
               .lt("due_date", today)
               .not("due_date", "is", null)
               .neq("status", "done")
@@ -99,9 +96,8 @@ export const dashboardTools = {
           : Promise.resolve({ data: [] }),
 
         linkedTaskIds.length > 0
-          ? liveTasks(ctx.db, "*, task_links!inner(entity_type, entity_id)")
+          ? visibleTasks(ctx, "*, task_links!inner(entity_type, entity_id)")
               .in("id", linkedTaskIds)
-              .eq("company_id", ctx.companyId)
               .gte("due_date", today)
               .lte("due_date", windowEnd)
               .neq("status", "done")

@@ -21,6 +21,8 @@ import { writeAuditLog } from "./audit.js";
 import type { ToolContext } from "../types/context.js";
 import { conflict } from "./conflict.js";
 import type { Render } from "../types/render.js";
+import { DESTRUCTIVE, EDIT, READ_ONLY } from "./annotations.js";
+import { taskVisibilityFilter } from "./filters.js";
 
 const ENTITY_TYPES = [
   "customer",
@@ -277,6 +279,28 @@ function entityLabel(type: RestorableEntity, entity: Record<string, unknown>, fa
   return (entity[RESTORE_CONFIG[type].labelColumn] as string) ?? fallback;
 }
 
+// Limits a read of a restorable table to rows the caller can see. For
+// tasks that is org tasks plus the caller's own personal tasks.
+function visibleRows<Q>(query: Q, type: RestorableEntity, userId: string): Q {
+  return type === "task" ? (query as any).or(taskVisibilityFilter(userId)) : query;
+}
+
+// Fetches one entity by id, including archived and soft-deleted rows.
+// Another user's personal task comes back as not found.
+function fetchActionEntity(
+  supabase: SupabaseClient,
+  userId: string,
+  type: RestorableEntity,
+  id: string
+): PromiseLike<{ data: any; error: any }> {
+  return visibleRows(supabase.from(RESTORE_CONFIG[type].table).select("*").eq("id", id), type, userId).single();
+}
+
+// The scope and creator of a task, for its audit entries.
+function taskAuditFields(type: RestorableEntity, entity: Record<string, unknown>): Record<string, unknown> {
+  return type === "task" ? { scope: entity.scope, created_by: entity.created_by } : {};
+}
+
 type ActionLoad =
   | { ok: true; entity: Record<string, unknown>; entityCompanyId: string; label: string }
   | { ok: false; status: "not_found" | "permission_denied"; message: string; label: string };
@@ -285,11 +309,11 @@ type ActionLoad =
 async function loadEntityForAction(
   supabase: SupabaseClient,
   companyId: string,
+  userId: string,
   type: RestorableEntity,
   id: string
 ): Promise<ActionLoad> {
-  const config = RESTORE_CONFIG[type];
-  const { data, error } = await supabase.from(config.table).select("*").eq("id", id).single();
+  const { data, error } = await fetchActionEntity(supabase, userId, type, id);
   if (error || !data) {
     return { ok: false, status: "not_found", message: `${type.replace(/_/g, " ")} not found`, label: id };
   }
@@ -337,7 +361,7 @@ async function restoreOne(
   entity_id: string
 ): Promise<RestoreOutcome> {
   const config = RESTORE_CONFIG[entity_type];
-  const loaded = await loadEntityForAction(supabase, companyId, entity_type, entity_id);
+  const loaded = await loadEntityForAction(supabase, companyId, ctx.userId, entity_type, entity_id);
   if (!loaded.ok) {
     return { status: loaded.status, entity_type, entity_id, label: loaded.label, message: loaded.message };
   }
@@ -413,7 +437,7 @@ async function restoreOne(
     action: `restore_${entity_type}`,
     entity_type,
     entity_id,
-    before_state: beforeState,
+    before_state: { ...beforeState, ...taskAuditFields(entity_type, entity) },
     after_state: afterState,
   });
 
@@ -437,7 +461,7 @@ async function purgeOne(
   entity_id: string
 ): Promise<PurgeOutcome> {
   const config = RESTORE_CONFIG[entity_type];
-  const loaded = await loadEntityForAction(supabase, companyId, entity_type, entity_id);
+  const loaded = await loadEntityForAction(supabase, companyId, ctx.userId, entity_type, entity_id);
   if (!loaded.ok) {
     return { status: loaded.status, entity_type, entity_id, label: loaded.label, message: loaded.message };
   }
@@ -477,7 +501,7 @@ async function purgeOne(
     action: `purge_${entity_type}`,
     entity_type,
     entity_id,
-    before_state: { label, deleted_at: entity.deleted_at },
+    before_state: { label, deleted_at: entity.deleted_at, ...taskAuditFields(entity_type, entity) },
     after_state: null,
   });
 
@@ -488,17 +512,22 @@ async function purgeOne(
 async function gatherDeleted(
   supabase: SupabaseClient,
   companyId: string,
+  userId: string,
   opts: { days: number; entity_type?: RestorableEntity; includeDemo: boolean; onlyDemo?: boolean }
 ): Promise<DeletedItem[]> {
   const cutoff = new Date(Date.now() - opts.days * 86_400_000).toISOString();
   const types = opts.entity_type ? [opts.entity_type] : ENTITY_TYPES;
   const perType = await Promise.all(
     types.map(async (type) => {
-      let q = supabase
-        .from(RESTORE_CONFIG[type].table)
-        .select(deletedSelect(type))
-        .not("deleted_at", "is", null)
-        .gte("deleted_at", cutoff);
+      let q = visibleRows(
+        supabase
+          .from(RESTORE_CONFIG[type].table)
+          .select(deletedSelect(type))
+          .not("deleted_at", "is", null)
+          .gte("deleted_at", cutoff),
+        type,
+        userId
+      );
       if (type === "contact" || type === "interaction") {
         q = q.eq("customers.company_id", companyId);
       } else if (type === "playbook_step") {
@@ -542,18 +571,19 @@ function hasBatchFilter(p: BatchSelect): boolean {
 async function resolveBatchTargets(
   supabase: SupabaseClient,
   companyId: string,
+  userId: string,
   p: BatchSelect
 ): Promise<BatchTarget[]> {
   if (p.items && p.items.length > 0) {
     const out: BatchTarget[] = [];
     for (const it of p.items) {
-      const loaded = await loadEntityForAction(supabase, companyId, it.entity_type, it.entity_id);
+      const loaded = await loadEntityForAction(supabase, companyId, userId, it.entity_type, it.entity_id);
       if (loaded.ok) out.push({ entity_type: it.entity_type, entity_id: it.entity_id, label: loaded.label });
     }
     return out;
   }
   const days = p.days ?? 30;
-  let items = await gatherDeleted(supabase, companyId, {
+  let items = await gatherDeleted(supabase, companyId, userId, {
     days,
     entity_type: p.entity_type,
     includeDemo: Boolean(p.all),
@@ -594,13 +624,14 @@ function countByType(targets: BatchTarget[]): Record<string, number> {
 export const restoreTools: ToolMap = {
   restore_item: {
     title: "Restore Archived or Deleted Item",
+    annotations: EDIT,
     description:
       "Restore a previously archived or soft-deleted item back to active state. Works for any entity type " +
       "that supports archiving or deletion: customer, contact, task, tag, playbook, playbook_step, " +
       "project, financial_account, financial_category, financial_transaction. " +
       "Soft-deleted items are automatically purged after 30 days - restore before then to recover. " +
       "Permission rules: org-scoped items can be restored by any company member; " +
-      "personal-scoped items (tasks) can only be restored by the creator or system owner.",
+      "personal-scoped items (tasks) can only be restored by the creator.",
     parameters: z.object({
       entity_type: z
         .enum(ENTITY_TYPES)
@@ -622,11 +653,7 @@ export const restoreTools: ToolMap = {
       const config = RESTORE_CONFIG[entity_type];
 
       // ── Fetch the entity ──────────────────────────────────
-      const { data: entity, error: fetchErr } = await supabase
-        .from(config.table)
-        .select("*")
-        .eq("id", entity_id)
-        .single();
+      const { data: entity, error: fetchErr } = await fetchActionEntity(supabase, ctx.userId, entity_type, entity_id);
 
       if (fetchErr || !entity) {
         throw new Error(`${entity_type} not found: ${fetchErr?.message ?? "no match"}`);
@@ -759,7 +786,7 @@ export const restoreTools: ToolMap = {
         action: `restore_${entity_type}`,
         entity_type,
         entity_id,
-        before_state: beforeState,
+        before_state: { ...beforeState, ...taskAuditFields(entity_type, entity) },
         after_state: afterState,
       });
 
@@ -784,6 +811,7 @@ export const restoreTools: ToolMap = {
   },
   list_deleted: {
     title: "List Deleted Items",
+    annotations: READ_ONLY,
     description:
       "List recently soft-deleted items (the recoverable trash) for the current company so the user can pick one to restore or permanently delete. Returns each item's type, a human-readable label, when it was deleted, and the date it will be auto-purged. Defaults to the last 7 days with leftover demo fixtures hidden; pass days to widen the window, entity_type to filter, or include_demo to show demo data. Each item carries entity_id for use with restore_item or purge_item - present items to the user by label, never by id. Response includes a render field with tiered rendering guidance - check it before composing your reply.",
     parameters: z.object({
@@ -822,11 +850,15 @@ export const restoreTools: ToolMap = {
 
       const perType = await Promise.all(
         types.map(async (type) => {
-          let q = supabase
-            .from(RESTORE_CONFIG[type].table)
-            .select(deletedSelect(type))
-            .not("deleted_at", "is", null)
-            .gte("deleted_at", cutoff);
+          let q = visibleRows(
+            supabase
+              .from(RESTORE_CONFIG[type].table)
+              .select(deletedSelect(type))
+              .not("deleted_at", "is", null)
+              .gte("deleted_at", cutoff),
+            type,
+            ctx.userId
+          );
           if (type === "contact" || type === "interaction") {
             q = q.eq("customers.company_id", companyId);
           } else if (type === "playbook_step") {
@@ -904,6 +936,7 @@ export const restoreTools: ToolMap = {
 
   purge_item: {
     title: "Permanently Delete Item",
+    annotations: DESTRUCTIVE,
     description:
       "Permanently and irreversibly delete a soft-deleted item (purge it from the trash, skipping the 30-day recovery window). Only operates on items that are already soft-deleted - it refuses items that are still active. On the first call it returns a confirmation conflict; pass resolution: \"confirm\" only after the user explicitly agrees, or \"cancel\" to abort. Cascades to child rows the database cascades (e.g. a customer's contacts and interactions). To recover an item instead of destroying it, use restore_item.",
     parameters: z.object({
@@ -934,11 +967,7 @@ export const restoreTools: ToolMap = {
       const companyId = ctx.companyId;
       const config = RESTORE_CONFIG[entity_type];
 
-      const { data: entity, error: fetchErr } = await supabase
-        .from(config.table)
-        .select("*")
-        .eq("id", entity_id)
-        .single();
+      const { data: entity, error: fetchErr } = await fetchActionEntity(supabase, ctx.userId, entity_type, entity_id);
       if (fetchErr || !entity) {
         throw new Error(
           `${entity_type} not found: ${fetchErr?.message ?? "no match"}`
@@ -1028,7 +1057,7 @@ export const restoreTools: ToolMap = {
         action: `purge_${entity_type}`,
         entity_type,
         entity_id,
-        before_state: { label, deleted_at: entity.deleted_at },
+        before_state: { label, deleted_at: entity.deleted_at, ...taskAuditFields(entity_type, entity) },
         after_state: null,
       });
 
@@ -1044,6 +1073,7 @@ export const restoreTools: ToolMap = {
   },
   purge_items: {
     title: "Batch Permanently Delete Items",
+    annotations: DESTRUCTIVE,
     description:
       "Permanently and irreversibly delete many soft-deleted items at once (batch purge from the trash). Provide either an explicit `items` list (entity_type + entity_id pairs, e.g. gathered from list_deleted) OR filters: entity_type, older_than_days, only_demo (leftover demo/test fixtures), or all. On the first call it returns a confirmation conflict summarizing how many items of each type will be destroyed; pass resolution: \"confirm\" only after the user explicitly agrees. Only ever touches already-soft-deleted items; cascades to child rows the database cascades. Use restore_items to recover instead.",
     parameters: z.object({
@@ -1072,7 +1102,7 @@ export const restoreTools: ToolMap = {
         };
       }
 
-      const targets = await resolveBatchTargets(supabase, companyId, p);
+      const targets = await resolveBatchTargets(supabase, companyId, ctx.userId, p);
       if (targets.length === 0) {
         return { success: true, purged_count: 0, message: "Nothing matched - the trash had no items for that selection." };
       }
@@ -1139,6 +1169,7 @@ export const restoreTools: ToolMap = {
 
   restore_items: {
     title: "Batch Restore Items",
+    annotations: EDIT,
     description:
       "Restore many soft-deleted items at once (batch recover from the trash). Provide either an explicit `items` list (entity_type + entity_id pairs) OR filters: entity_type, older_than_days, or all. Restores are reversible - you can delete the items again - so this executes directly and returns a summary of what was recovered. Use purge_items to permanently delete instead.",
     parameters: z.object({
@@ -1163,7 +1194,7 @@ export const restoreTools: ToolMap = {
         };
       }
 
-      const targets = await resolveBatchTargets(supabase, companyId, { ...p, only_demo: false });
+      const targets = await resolveBatchTargets(supabase, companyId, ctx.userId, { ...p, only_demo: false });
       if (targets.length === 0) {
         return { success: true, restored_count: 0, message: "Nothing matched - the trash had no items for that selection." };
       }

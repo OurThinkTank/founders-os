@@ -11,6 +11,7 @@ import type { ToolMap } from "../register.js";
 import type { ToolContext } from "../../types/context.js";
 import { getCachedItemByIndex } from "./cache.js";
 import { BookmarkItemInput, ListBookmarksInput, RemoveBookmarkInput } from "./types.js";
+import { ADDITIVE, DESTRUCTIVE, READ_ONLY } from "../annotations.js";
 
 export const bookmarkTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
@@ -18,6 +19,7 @@ export const bookmarkTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   bookmark_item: {
     title: "Bookmark Feed Item",
+    annotations: ADDITIVE,
     description:
       "Save a feed item for later. Snapshots the item content so it persists beyond " +
       "the cache. Use the feed_url and item index number from get_feed_items.",
@@ -94,6 +96,7 @@ export const bookmarkTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_bookmarks: {
     title: "List Bookmarks",
+    annotations: READ_ONLY,
     description:
       "List saved feed item bookmarks, newest first. Returns title, summary, " +
       "source feed, and link for each bookmark.",
@@ -133,6 +136,7 @@ export const bookmarkTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_bookmark: {
     title: "Remove Bookmark",
+    annotations: DESTRUCTIVE,
     description: "Remove a saved bookmark by its ID.",
     parameters: RemoveBookmarkInput,
     handler: async (ctx: ToolContext, { bookmark_id }: { bookmark_id: string }) => {

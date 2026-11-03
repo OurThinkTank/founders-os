@@ -54,6 +54,7 @@ export async function detectFirstRun(
         .from("customers")
         .select("id", { count: "exact", head: true })
         .is("deleted_at", null),
+      // task-visibility-lint: allow - internal count for the first-run check, not shown to the caller
       supabase
         .from("tasks")
         .select("id", { count: "exact", head: true })

@@ -6,7 +6,7 @@
 //
 //   Org-scoped items:  any member of the company can remove/restore
 //   User-scoped items: only the creator (or system owner) can
-//                      remove/restore
+//                      remove; only the creator can restore
 //
 // "System owner" means the user has is_owner = true in
 // company_members. Solo-mode users (ctx.isSoloMode === true) are
@@ -87,13 +87,34 @@ export async function canRemove(
 }
 
 /**
- * Check whether the calling user can restore an archived entity.
- * Uses the same rules as canRemove - if you could remove it,
- * you can restore it.
+ * Check whether the calling user can restore or purge an entity.
+ *
+ * Rules:
+ *   - Entity must belong to the caller's company
+ *   - Org-scoped: any member can restore
+ *   - Personal-scoped: only the creator can restore
  */
 export async function canRestore(
   ctx: ToolContext,
   entity: ScopedEntity
 ): Promise<PermissionResult> {
-  return canRemove(ctx, entity);
+  if (entity.company_id !== ctx.companyId) {
+    return {
+      allowed: false,
+      reason: "This item belongs to a different organization.",
+    };
+  }
+
+  if (entity.scope === "org") {
+    return { allowed: true };
+  }
+
+  if ((entity.created_by ?? entity.user_id) === ctx.userId) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: "This is a personal item. Only its creator can restore it.",
+  };
 }

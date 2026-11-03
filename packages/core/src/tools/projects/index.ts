@@ -14,11 +14,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { conflict } from "../conflict.js";
-import { liveTasks } from "../filters.js";
+import { visibleTasks } from "../filters.js";
 import { toSlug } from "../tags/index.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Note: legacy helpers used inside contextual handlers below:
 //   - toSlug() is pure
@@ -34,6 +35,7 @@ export const projectTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   create_project: {
     title: "Create Project",
+    annotations: ADDITIVE,
     description:
       "Register a new project. Auto-creates a #-prefixed tag in the tag registry. " +
       "Returns a conflict if a project with the same slug already exists. " +
@@ -130,6 +132,7 @@ export const projectTools: ToolMap = {
 
       // Check for existing tasks/customers already using this tag
       const [taskRes, custRes] = await Promise.all([
+        // task-visibility-lint: allow - count for a tag cascade that rewrites every task, shown before approval
         ctx.db
           .from("tasks")
           .select("id", { count: "exact", head: true })
@@ -190,6 +193,7 @@ export const projectTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_projects: {
     title: "List Projects",
+    annotations: READ_ONLY,
     description:
       "List registered projects. Defaults to active projects only. " +
       "Returns task counts per project (queried by tag). " +
@@ -236,20 +240,16 @@ export const projectTools: ToolMap = {
           if (!tagName) return { ...p, task_counts: null };
 
           const [todoRes, ipRes, blockedRes, doneRes] = await Promise.all([
-            liveTasks(ctx.db, "id", { count: "exact", head: true })
-              .eq("company_id", companyId)
+            visibleTasks(ctx, "id", { count: "exact", head: true })
               .eq("status", "todo")
               .contains("tags", [tagName]),
-            liveTasks(ctx.db, "id", { count: "exact", head: true })
-              .eq("company_id", companyId)
+            visibleTasks(ctx, "id", { count: "exact", head: true })
               .eq("status", "in_progress")
               .contains("tags", [tagName]),
-            liveTasks(ctx.db, "id", { count: "exact", head: true })
-              .eq("company_id", companyId)
+            visibleTasks(ctx, "id", { count: "exact", head: true })
               .eq("status", "blocked")
               .contains("tags", [tagName]),
-            liveTasks(ctx.db, "id", { count: "exact", head: true })
-              .eq("company_id", companyId)
+            visibleTasks(ctx, "id", { count: "exact", head: true })
               .eq("status", "done")
               .contains("tags", [tagName]),
           ]);
@@ -303,6 +303,7 @@ export const projectTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_project: {
     title: "Get Project",
+    annotations: READ_ONLY,
     description:
       "Get a full project card: project details, associated tag, and all tasks/customers " +
       "carrying the project's tag. Tasks are grouped by status with recent items shown.",
@@ -331,26 +332,22 @@ export const projectTools: ToolMap = {
 
       // Fetch tasks by tag, grouped by status
       const [todoTasks, ipTasks, blockedTasks, doneTasks] = await Promise.all([
-        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, created_at")
-          .eq("company_id", companyId)
+        visibleTasks(ctx, "id, title, priority, due_date, assigned_to, created_at")
           .eq("status", "todo")
           .contains("tags", [tagName])
           .order("created_at", { ascending: false })
           .limit(10),
-        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, created_at")
-          .eq("company_id", companyId)
+        visibleTasks(ctx, "id, title, priority, due_date, assigned_to, created_at")
           .eq("status", "in_progress")
           .contains("tags", [tagName])
           .order("created_at", { ascending: false })
           .limit(10),
-        liveTasks(ctx.db, "id, title, priority, due_date, assigned_to, blocked_reason, created_at")
-          .eq("company_id", companyId)
+        visibleTasks(ctx, "id, title, priority, due_date, assigned_to, blocked_reason, created_at")
           .eq("status", "blocked")
           .contains("tags", [tagName])
           .order("created_at", { ascending: false })
           .limit(10),
-        liveTasks(ctx.db, "id, title, completed_at")
-          .eq("company_id", companyId)
+        visibleTasks(ctx, "id, title, completed_at")
           .eq("status", "done")
           .contains("tags", [tagName])
           .order("completed_at", { ascending: false })
@@ -359,14 +356,14 @@ export const projectTools: ToolMap = {
 
       // Count totals (the queries above are limited)
       const [todoCount, ipCount, blockedCount, doneCount] = await Promise.all([
-        liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "todo").contains("tags", [tagName]),
-        liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "in_progress").contains("tags", [tagName]),
-        liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "blocked").contains("tags", [tagName]),
-        liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("company_id", companyId).eq("status", "done").contains("tags", [tagName]),
+        visibleTasks(ctx, "id", { count: "exact", head: true })
+          .eq("status", "todo").contains("tags", [tagName]),
+        visibleTasks(ctx, "id", { count: "exact", head: true })
+          .eq("status", "in_progress").contains("tags", [tagName]),
+        visibleTasks(ctx, "id", { count: "exact", head: true })
+          .eq("status", "blocked").contains("tags", [tagName]),
+        visibleTasks(ctx, "id", { count: "exact", head: true })
+          .eq("status", "done").contains("tags", [tagName]),
       ]);
 
       // Fetch customers by tag
@@ -413,6 +410,7 @@ export const projectTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   update_project: {
     title: "Update Project",
+    annotations: EDIT,
     description:
       "Update a project's name, description, or status. Name changes trigger a tag rename " +
       "with propagation conflict if the tag is in use. Status change to 'completed' or 'archived' " +
@@ -483,8 +481,7 @@ export const projectTools: ToolMap = {
         !proceedArchive &&
         current.tag_name
       ) {
-        const { count } = await liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("company_id", companyId)
+        const { count } = await visibleTasks(ctx, "id", { count: "exact", head: true })
           .in("status", ["todo", "in_progress", "blocked"])
           .contains("tags", [current.tag_name]);
 
@@ -542,6 +539,7 @@ export const projectTools: ToolMap = {
             // Check usage and ask about propagation if not already decided
             if (doCascade === undefined) {
               const [taskRes, custRes] = await Promise.all([
+                // task-visibility-lint: allow - count for a tag cascade that rewrites every task, shown before approval
                 ctx.db
                   .from("tasks")
                   .select("id", { count: "exact", head: true })
@@ -699,6 +697,7 @@ export const projectTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_project: {
     title: "Remove Project",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a project by archiving (sets status to 'archived', recoverable) or permanently deleting. " +
       "On first call, returns a conflict with ARCHIVE / DELETE / CANCEL options. " +
@@ -736,8 +735,7 @@ export const projectTools: ToolMap = {
       // Count linked data
       const [taskRes, custRes] = await Promise.all([
         tagName
-          ? liveTasks(ctx.db, "id", { count: "exact", head: true })
-              .eq("company_id", companyId)
+          ? visibleTasks(ctx, "id", { count: "exact", head: true })
               .in("status", ["todo", "in_progress", "blocked"])
               .contains("tags", [tagName])
           : Promise.resolve({ count: 0 }),

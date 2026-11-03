@@ -4,9 +4,10 @@ import { sanitizeSearchQuery } from "../../utils/sanitize.js";
 import { conflict } from "../conflict.js";
 import { writeAuditLog } from "../audit.js";
 import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResolution } from "../remove.js";
-import { tagFilterParams, resolveTagList } from "../filters.js";
+import { tagFilterParams, resolveTagList, taskVisibilityFilter } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // ────────────────────────────────────────
 // Customer tools (schema + handler pairs)
@@ -15,6 +16,7 @@ import type { ToolContext } from "../../types/context.js";
 export const customerTools = {
   add_customer: {
     title: "Add Customer",
+    annotations: ADDITIVE,
     description:
       "Create a new customer record. Customers are organizations or individuals that your business works with or is pursuing. " +
       "If similar customers already exist, a `conflict` response is returned with options to use an existing record " +
@@ -146,6 +148,7 @@ export const customerTools = {
 
   get_customer: {
     title: "Get Customer",
+    annotations: READ_ONLY,
     description:
       "Get a single customer with their contacts, recent interactions, and open tasks.",
     parameters: z.object({
@@ -178,6 +181,7 @@ export const customerTools = {
           .eq("company_id", ctx.companyId)
           .in("tasks.status", ["todo", "in_progress", "blocked"])
           .is("tasks.deleted_at", null)
+          .or(taskVisibilityFilter(ctx.userId), { referencedTable: "tasks" })
           .order("tasks(due_date)", { ascending: true }),
       ]);
 
@@ -198,6 +202,7 @@ export const customerTools = {
 
   update_customer: {
     title: "Update Customer",
+    annotations: EDIT,
     description: "Update fields on an existing customer record.",
     parameters: z.object({
       customer_id: z.string().uuid().describe("Customer UUID"),
@@ -242,6 +247,7 @@ export const customerTools = {
 
   search_customers: {
     title: "Search Customers",
+    annotations: READ_ONLY,
     description:
       "Search customers by name, notes, city, state, or tags. Returns matching customers with summary info.",
     parameters: z.object({
@@ -333,6 +339,7 @@ export const customerTools = {
 
   list_customers: {
     title: "List Customers",
+    annotations: READ_ONLY,
     description:
       "List customers with optional filters. Returns paginated results with summary info. " +
       "Response includes a render field with tiered rendering guidance - check it before composing your reply.",
@@ -463,6 +470,7 @@ export const customerTools = {
 
   remove_customer: {
     title: "Remove Customer",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a customer by archiving (sets phase to inactive, recoverable) or permanently deleting. " +
       "On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL options. " +
