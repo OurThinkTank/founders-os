@@ -79,36 +79,44 @@ jobs:
 
       # Trusted publishing (OIDC): npm exchanges this job's GitHub OIDC token
       # (id-token: write above) for a short-lived publish token, so there is no
-      # NPM_TOKEN secret. Requires npm >= 11.5.1 and a trusted publisher on
-      # npmjs.com for each package naming this workflow file. Upgrade npm only
-      # after npm ci, and stay on 11: npm 12 turns install scripts off by default.
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@^11.10.0 && npm --version
+      # NPM_TOKEN secret. That token can only STAGE a version; a maintainer
+      # approves it with 2FA before it goes live (see RELEASING.md). Needs a
+      # trusted publisher on npmjs.com naming this workflow file, and
+      # npm >= 11.15.0 for `npm stage publish`. Upgrade npm only after npm ci,
+      # and stay on 11: npm 12 turns install scripts off by default.
+      - name: Upgrade npm for trusted + staged publishing
+        run: npm install -g npm@^11.15.0 && npm --version
 
       # Order matters: core must be on the registry before mcp-server, because
       # mcp-server depends on it. The local workspace uses "*" for the core
       # dependency; we pin it to the exact prerelease version before publishing
       # mcp-server so consumers resolve a concrete prerelease. Same shape as
       # publish.yml, but with --tag so `latest` is never touched.
-      - name: Publish core
-        run: npm publish -w packages/core --tag "${{ inputs.dist_tag }}" --provenance
+      # Run from the package directory rather than with -w: the npm stage docs
+      # call the command workspace-unaware. The dist-tag is fixed at stage time.
+      - name: Stage core
+        working-directory: packages/core
+        run: npm stage publish --tag "${{ inputs.dist_tag }}" --provenance
 
       - name: Pin mcp-server core dependency to exact version
         run: npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=${{ inputs.version }}"
 
-      - name: Publish mcp-server
-        run: npm publish -w packages/mcp-server --tag "${{ inputs.dist_tag }}" --provenance
+      - name: Stage mcp-server
+        working-directory: packages/mcp-server
+        run: npm stage publish --tag "${{ inputs.dist_tag }}" --provenance
 
       - name: Summary
         run: |
           {
-            echo "### Prerelease published"
+            echo "### Prerelease staged - not live yet"
+            echo ""
+            echo "Approve with 2FA on npmjs.com (or \`npm stage approve <id>\`): core first, then mcp-server."
             echo ""
             echo "- Version: \`${{ inputs.version }}\`"
             echo "- Dist-tag: \`${{ inputs.dist_tag }}\`"
             echo "- From ref: \`${{ inputs.ref }}\`"
             echo ""
-            echo "Test it:"
+            echo "Once approved, test it:"
             echo "\`\`\`"
             echo "npx -y @ourthinktank/founders-os@${{ inputs.dist_tag }}"
             echo "\`\`\`"

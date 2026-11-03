@@ -36,13 +36,14 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Trusted publishing (OIDC): npm exchanges this job's GitHub OIDC token
-      # (id-token: write above) for a short-lived publish token, so there is no
-      # NPM_TOKEN secret. Requires npm >= 11.5.1 and a trusted publisher on
-      # npmjs.com for each package naming this workflow file. Upgrade npm only
-      # after npm ci, and stay on 11: npm 12 turns install scripts off by default.
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@^11.10.0 && npm --version
+      # Trusted publishing (OIDC) + staged publishing: npm exchanges this job's
+      # GitHub OIDC token (id-token: write above) for a short-lived token, so
+      # there is no NPM_TOKEN secret. That token can only STAGE a version; a
+      # maintainer approves it with 2FA before it goes live (see RELEASING.md).
+      # `npm stage publish` needs npm >= 11.15.0. Upgrade npm only after npm ci,
+      # and stay on 11: npm 12 turns install scripts off by default.
+      - name: Upgrade npm for trusted + staged publishing
+        run: npm install -g npm@^11.15.0 && npm --version
 
       # Two-package publish (Phase 1 core extraction). Order matters: core must
       # be on the registry before mcp-server, because mcp-server depends on it.
@@ -52,16 +53,32 @@ jobs:
       #
       # --provenance is enabled below: the repo is public, so npm can attest the
       # build from this workflow (the job already declares `id-token: write`).
-      - name: Publish core
-        run: npm publish -w packages/core --provenance
+      # Run from the package directory rather than with -w: the npm stage docs
+      # call the command workspace-unaware.
+      - name: Stage core
+        working-directory: packages/core
+        run: npm stage publish --provenance
 
       - name: Pin mcp-server core dependency to exact version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=$VERSION"
 
-      - name: Publish mcp-server
-        run: npm publish -w packages/mcp-server --provenance
+      - name: Stage mcp-server
+        working-directory: packages/mcp-server
+        run: npm stage publish --provenance
+
+      - name: Summary
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          {
+            echo "### Staged v$VERSION - not live yet"
+            echo ""
+            echo "Approve with 2FA on npmjs.com or with \`npm stage list\` + \`npm stage approve <id>\`, in this order:"
+            echo ""
+            echo "1. \`@ourthinktank/founders-os-core@$VERSION\`"
+            echo "2. \`@ourthinktank/founders-os@$VERSION\` (depends on core $VERSION, so approve it second)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Build the standalone setup page (integrations/setup-page) with the release
   # version stamped in the footer and the canonical supabase/setup.sql inlined,

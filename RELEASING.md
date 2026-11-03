@@ -11,7 +11,7 @@ Ground rules that apply to every path below:
 - Core must be published before mcp-server, because mcp-server depends on it.
 - In the repo, mcp-server declares the core dependency as `"*"`; at publish time it is pinned to the exact version so consumers resolve a concrete release.
 - The version fields in the `package.json` files are not the source of truth. The release tag (or the workflow input) is, and CI overwrites the version fields at publish time. They may lag in the repo, which is fine.
-- Publishing uses npm trusted publishing (OIDC). There is no npm token: each workflow exchanges its GitHub OIDC token for a short-lived publish token, and npm attaches provenance automatically. This needs `id-token: write` on the job, npm 11.5.1 or later (the workflows upgrade npm before publishing), and a trusted publisher configured on npmjs.com for both packages.
+- Publishing uses npm trusted publishing (OIDC) with staged publishing. There is no npm token: each workflow exchanges its GitHub OIDC token for a short-lived token that can only **stage** a version. Nothing goes live until a maintainer approves it with 2FA. This needs `id-token: write` on the job, npm 11.15.0 or later (the workflows upgrade npm before staging), and a trusted publisher configured on npmjs.com for both packages.
 - `main` is the public release line; `develop` is the integration line. Releases come from `main`, prereleases from `develop`.
 
 ## 1. Standard release (publishes to `latest`)
@@ -21,7 +21,9 @@ Driven by `.github/workflows/publish.yml`, which fires when a GitHub release is 
 1. Land everything for the release on `develop` and confirm it is green (`npm test` from the root runs both packages).
 2. Open a PR `develop` -> `main` and merge once reviewed.
 3. On `main`, create a GitHub release with a tag of the form `vX.Y.Z` (the leading `v` is stripped by CI).
-4. CI then, in order: syncs all package versions from the tag, runs `npm ci`, builds, publishes core with `--provenance`, pins mcp-server's core dependency to the exact version, publishes mcp-server with `--provenance`, and builds the standalone setup page and attaches it to the release as an asset.
+4. CI then, in order: syncs all package versions from the tag, runs `npm ci`, builds, stages core, pins mcp-server's core dependency to the exact version, stages mcp-server, and builds the standalone setup page and attaches it to the release as an asset. The run summary lists what to approve.
+5. Approve both staged versions with 2FA, **core first, then mcp-server**. Use the Approve action on npmjs.com, or `npm stage list` then `npm stage approve <stage-id>`. Approving mcp-server first would briefly make it installable while its pinned core version is not.
+6. Confirm with `npm view @ourthinktank/founders-os dist-tags`.
 
 You do not bump versions by hand for a release; the tag is authoritative.
 
@@ -64,7 +66,8 @@ Use this to put a real, installable build on npm for remote testers without movi
 
 1. Run the "Publish prerelease to npm" workflow from the Actions tab.
 2. Inputs: a prerelease `version` such as `0.15.0-rc.1` (it must contain a hyphen), the `ref` to build from (defaults to `develop`), and the `dist_tag` (defaults to `next`).
-3. The workflow validates the inputs (rejects a non-prerelease version and refuses `latest`), syncs versions, builds, tests, then publishes core and mcp-server under the chosen dist-tag with provenance.
+3. The workflow validates the inputs (rejects a non-prerelease version and refuses `latest`), syncs versions, builds, tests, then stages core and mcp-server under the chosen dist-tag.
+4. Approve both staged versions with 2FA, core first, then mcp-server. The dist-tag is fixed at stage time; to change it, reject the staged version and run the workflow again.
 
 Testers install with:
 
@@ -87,8 +90,13 @@ Configured once per package on npmjs.com (package settings, Trusted Publisher, G
 - Repository: `founders-os`
 - Workflow filename: `publish.yml` (and `prerelease.yml` if the prerelease channel is used)
 - Environment: none
+- Allowed actions: leave **Allow npm publish** unchecked. Staging is always allowed, and requiring approval is the point. Leave **Allow npm dist-tag** unchecked too; the workflows set the tag at stage time.
 
 Changing this configuration requires interactive 2FA. If a publish fails with a 404 or "access token expired or revoked" on `PUT`, check that the workflow filename here matches the file that ran, that the npm upgrade step printed 11.5.1 or later, and that no `NODE_AUTH_TOKEN` is set in the publish step's environment.
+
+## Rejecting a staged version
+
+If a staged version is wrong, reject it with 2FA (on npmjs.com or `npm stage reject <stage-id>`). A version can be staged again after it is rejected, so fix the problem and re-run the workflow. Reject both packages if either is wrong, so the pair stays in lockstep.
 
 ## Manual fallback
 
