@@ -20,6 +20,31 @@ import {
 } from "./access.js";
 import { AUDIT_DOMAINS } from "../audit.js";
 import type { ToolContext } from "../../types/context.js";
+import { DESTRUCTIVE, READ_ONLY } from "../annotations.js";
+
+type AuditRow = { entity_type: string; entity_id: string; before_state: Record<string, unknown> | null };
+
+// Leaves out entries about another user's personal task. Scope and creator
+// come from the task row, or from the entry's before_state when the task
+// has been purged.
+async function hideOtherUsersPersonalTasks<T extends AuditRow>(ctx: ToolContext, entries: T[]): Promise<T[]> {
+  const taskIds = [...new Set(entries.filter((e) => e.entity_type === "task").map((e) => e.entity_id))];
+  if (taskIds.length === 0) return entries;
+
+  // task-visibility-lint: allow - reads scope and creator only, to hide entries
+  const { data: rows } = await ctx.db
+    .from("tasks")
+    .select("id, scope, created_by")
+    .eq("company_id", ctx.companyId)
+    .in("id", taskIds);
+  const byId = new Map<string, Record<string, unknown>>((rows ?? []).map((r: { id: string }) => [r.id, r]));
+
+  return entries.filter((e) => {
+    if (e.entity_type !== "task") return true;
+    const task = byId.get(e.entity_id) ?? e.before_state ?? {};
+    return !(task.scope === "personal" && task.created_by !== ctx.userId);
+  });
+}
 
 export const financialManagementTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
@@ -27,6 +52,7 @@ export const financialManagementTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   set_financial_access: {
     title: "Set Financial Access",
+    annotations: DESTRUCTIVE,
     description:
       "Grant or restrict a team member's access to financial tools. " +
       "Requires owner role. " +
@@ -125,6 +151,7 @@ export const financialManagementTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_financial_access: {
     title: "Get Financial Access",
+    annotations: READ_ONLY,
     description:
       "Check a user's financial access level. " +
       "Any user can check their own access. " +
@@ -193,6 +220,7 @@ export const financialManagementTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_audit_log: {
     title: "Get Audit Log",
+    annotations: READ_ONLY,
     description:
       "Read the immutable audit log for this company. " +
       "Owners can read all entries (scope='all'). " +
@@ -318,9 +346,11 @@ export const financialManagementTools: ToolMap = {
       const { data, error } = await query;
       if (error) throw new Error(`Failed to read audit log: ${error.message}`);
 
+      const entries = await hideOtherUsersPersonalTasks(ctx, data ?? []);
+
       return {
-        entries: data ?? [],
-        count: data?.length ?? 0,
+        entries,
+        count: entries.length,
         scope: effectiveScope,
         note: "Audit log is immutable. Entries cannot be modified or deleted.",
       };

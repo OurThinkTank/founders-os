@@ -28,13 +28,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
 import { getLocalDateStr, getLocalTime, getTimeOfDay, getLocalTimezone } from "../dates.js";
-import { liveTasks } from "../filters.js";
+import { visibleTasks, taskVisibilityFilter } from "../filters.js";
 import { getFinancialAccess, financialPermissionError } from "../financial/access.js";
 import { RENDERING_CONTRACT, RENDERING_CONTRACT_VERSION } from "../../contract.js";
 import { getSchemaHint } from "../../schema-state.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
 import { conflict } from "../conflict.js";
+import { ADDITIVE, READ_ONLY } from "../annotations.js";
 
 // Note: getFinancialAccess() (financial/access.js) still reads env vars
 // directly. Its ctx refactor is deferred — see oss-launch-plan.md
@@ -208,6 +209,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_entity_card: {
     title: "Get Entity Card",
+    annotations: READ_ONLY,
     description:
       "Get a complete picture of any entity: the record itself, all open tasks linked to it, " +
       "recent interactions, and any linked transactions. Replaces multiple separate calls " +
@@ -300,12 +302,11 @@ export const surfaceTools: ToolMap = {
 
       let openTasks: unknown[] = [];
       if (taskIds.length > 0) {
-        const { data } = await liveTasks(
-          ctx.db,
+        const { data } = await visibleTasks(
+          ctx,
           "id, title, status, priority, assigned_to, due_date, tags, blocked_by_task_id"
         )
           .in("id", taskIds)
-          .eq("company_id", ctx.companyId)
           .neq("status", "done")
           .order("due_date", { ascending: true, nullsFirst: false });
         openTasks = data ?? [];
@@ -406,6 +407,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_session_start: {
     title: "Get Session Start",
+    annotations: READ_ONLY,
     description:
       "Session orientation pointer. Returns today's date and a list of tools " +
       "to call in parallel for a complete morning briefing. Does not fetch data " +
@@ -568,6 +570,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_weekly_retro: {
     title: "Get Weekly Retro",
+    annotations: READ_ONLY,
     description:
       "Completed-task retrospective for a given week. Groups done tasks by their first tag, " +
       "includes completion notes as quotes, and optionally formats as a LinkedIn-ready draft. " +
@@ -654,8 +657,6 @@ export const surfaceTools: ToolMap = {
       const weekLabel = `${mondayLocalStr} to ${sundayLocalStr}`;
 
       // Fetch completed tasks in the window
-      const scopeOrFilter = `scope.eq.org,and(scope.eq.personal,created_by.eq.${userId})`;
-
       let query = ctx.db
         .from("tasks")
         .select("id, title, tags, completed_at, assigned_to")
@@ -664,15 +665,10 @@ export const surfaceTools: ToolMap = {
         .gte("completed_at", startStr)
         .lt("completed_at", endStr)
         .is("deleted_at", null)
+        .or(taskVisibilityFilter(userId))
         .order("completed_at", { ascending: true });
 
-      if (scope === "personal") {
-        query = query.eq("scope", "personal").eq("created_by", userId);
-      } else if (scope === "org") {
-        query = query.eq("scope", "org");
-      } else {
-        query = query.or(scopeOrFilter);
-      }
+      if (scope) query = query.eq("scope", scope);
 
       const { data: tasks, error } = await query;
       if (error) throw new Error(`Failed to fetch retro data: ${error.message}`);
@@ -820,6 +816,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_stuck_list: {
     title: "Get Stuck List",
+    annotations: READ_ONLY,
     description:
       "Surface stuck, stale, and overdue tasks that need triage. Returns in_progress tasks " +
       "untouched for N days, blocked tasks, and overdue tasks (todo or in_progress with past " +
@@ -845,57 +842,34 @@ export const surfaceTools: ToolMap = {
       scope?: "personal" | "org";
       timezone?: string;
     }) => {
-      const userId = ctx.userId;
       const today = new Date();
       const todayStr = getLocalDateStr(timezone);
       const staleThreshold = new Date(
         Date.now() - max_age_days * 86_400_000
       ).toISOString();
-      const scopeOrFilter = `scope.eq.org,and(scope.eq.personal,created_by.eq.${userId})`;
       // Shared column list for stale/blocked/overdue queries
       const stuckFields = "id,title,status,priority,assigned_to,due_date,updated_at,tags,blocked_reason,blocked_by_task_id";
 
       // 1. Stale in_progress tasks (updated_at older than threshold)
-      let staleQuery = liveTasks(ctx.db, stuckFields)
-        .eq("company_id", ctx.companyId)
+      let staleQuery = visibleTasks(ctx, stuckFields)
         .eq("status", "in_progress")
         .lt("updated_at", staleThreshold);
 
-      if (scope === "personal") {
-        staleQuery = staleQuery.eq("scope", "personal").eq("created_by", userId);
-      } else if (scope === "org") {
-        staleQuery = staleQuery.eq("scope", "org");
-      } else {
-        staleQuery = staleQuery.or(scopeOrFilter);
-      }
+      if (scope) staleQuery = staleQuery.eq("scope", scope);
 
       // 2. All blocked tasks
-      let blockedQuery = liveTasks(ctx.db, stuckFields)
-        .eq("company_id", ctx.companyId)
+      let blockedQuery = visibleTasks(ctx, stuckFields)
         .eq("status", "blocked");
 
-      if (scope === "personal") {
-        blockedQuery = blockedQuery.eq("scope", "personal").eq("created_by", userId);
-      } else if (scope === "org") {
-        blockedQuery = blockedQuery.eq("scope", "org");
-      } else {
-        blockedQuery = blockedQuery.or(scopeOrFilter);
-      }
+      if (scope) blockedQuery = blockedQuery.eq("scope", scope);
 
       // 3. Overdue tasks (FIX NEW-06: was todo-only; now includes in_progress).
-      let overdueQuery = liveTasks(ctx.db, stuckFields)
-        .eq("company_id", ctx.companyId)
+      let overdueQuery = visibleTasks(ctx, stuckFields)
         .in("status", ["todo", "in_progress"])
         .lt("due_date", todayStr)
         .not("due_date", "is", null);
 
-      if (scope === "personal") {
-        overdueQuery = overdueQuery.eq("scope", "personal").eq("created_by", userId);
-      } else if (scope === "org") {
-        overdueQuery = overdueQuery.eq("scope", "org");
-      } else {
-        overdueQuery = overdueQuery.or(scopeOrFilter);
-      }
+      if (scope) overdueQuery = overdueQuery.eq("scope", scope);
 
       const [staleRes, blockedRes, overdueRes] = await Promise.all([
         staleQuery.limit(20),
@@ -1030,6 +1004,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   checkpoint: {
     title: "Checkpoint",
+    annotations: ADDITIVE,
     description:
       "End-of-session bookend to get_session_start. Call when the user says 'checkpoint', " +
       "'let's checkpoint', or 'wrap up this session'. Returns the ordered checkpoint procedure " +
@@ -1246,6 +1221,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_project_history: {
     title: "Get Project History",
+    annotations: READ_ONLY,
     description:
       "Chronological timeline of stored memories for a single project. Use to review " +
       "how a project has progressed over time, to answer 'where did we leave off', or " +
@@ -1416,6 +1392,7 @@ export const surfaceTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_last_checkpoint: {
     title: "Get Last Checkpoint",
+    annotations: READ_ONLY,
     description:
       "Retrieve the caller's most recent checkpoint to show it or resume from it. " +
       "Call when the user asks to see or pick up their last checkpoint (e.g. 'what " +

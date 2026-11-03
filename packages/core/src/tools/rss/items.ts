@@ -11,6 +11,7 @@ import type { ToolContext } from "../../types/context.js";
 import { getCachedItems, getCachedItemByIndex } from "./cache.js";
 import { chunkArray } from "./fetcher.js";
 import { GetFeedItemsInput, ReadFeedItemInput } from "./types.js";
+import { READ_ONLY_NETWORK } from "../annotations.js";
 
 /** Fetch the user's feeds with catalog URLs, optionally filtered. */
 async function getUserFeeds(
@@ -53,6 +54,7 @@ export const itemTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_feed_items: {
     title: "Get Feed Items",
+    annotations: READ_ONLY_NETWORK,
     description:
       "Fetch the latest items from subscribed feeds. Returns a numbered summary list " +
       "with title, author, date, and whether full content is available. " +
@@ -147,6 +149,7 @@ export const itemTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   read_feed_item: {
     title: "Read Feed Item",
+    annotations: READ_ONLY_NETWORK,
     description:
       "Read the full content of a feed item by its index number (from get_feed_items). " +
       "If the feed provides full article content, it is returned as HTML. " +

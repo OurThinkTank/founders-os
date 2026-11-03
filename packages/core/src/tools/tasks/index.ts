@@ -29,7 +29,8 @@ import { handleRemove, removeResolutionParams, type RemoveMode, type RemoveResol
 import { tagFilterParams, resolveTagList } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
-import { liveTasks } from "../filters.js";
+import { visibleTasks, findVisibleTask } from "../filters.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Note: helpers used inside contextual handlers below are all contextual:
 //   - validateTags(ctx, ...) (tags-domain refactor 2026-05-28).
@@ -89,12 +90,43 @@ interface TaskRow {
   updated_at: string;
 }
 
+// True when the assignee is a person other than the caller. AI agents
+// (an @ prefix) and no assignee do not count.
+function isOtherHuman(assignee: string | null | undefined, userId: string): boolean {
+  if (!assignee) return false;
+  if (assignee.startsWith("@")) return false;
+  return assignee.toLowerCase() !== userId.toLowerCase();
+}
+
+// Conflict returned when a personal task would be assigned to another person.
+function personalAssigneeConflict(assignee: string, context: Record<string, unknown>) {
+  return conflict(
+    "validation_mismatch",
+    `Personal tasks can only be assigned to you, an AI agent (such as @claude), or nobody. ` +
+      `"${assignee}" is another person. Make it an org task so they can see it?`,
+    [
+      { key: "make_org", label: "Make it an org task", value: { resolution: "make_org" } },
+      { key: "cancel", label: "Cancel", value: { resolution: "cancel" } },
+    ],
+    context
+  );
+}
+
+const personalAssigneeResolution = z
+  .enum(["make_org", "cancel"])
+  .optional()
+  .describe(
+    "Conflict resolution when a personal task would be assigned to another person: " +
+      "'make_org' saves it as an org task, 'cancel' aborts."
+  );
+
 export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   // create_task
   // ──────────────────────────────────────────────────────────
   create_task: {
     title: "Create Task",
+    annotations: ADDITIVE,
     description:
       "Create a new task. Scope 'org' (default) is visible to all team members; 'personal' is private to the creator. " +
       "Use assigned_to with a FOUNDERS_OS_USER_ID for human assignment, or '@claude' / '@gpt' for AI assignment. " +
@@ -115,7 +147,10 @@ export const taskTools: ToolMap = {
       scope: z
         .enum(["personal", "org"])
         .optional()
-        .describe("'org' (default) for team-visible; 'personal' for private."),
+        .describe(
+          "'org' (default) for team-visible; 'personal' for private. " +
+            "A personal task can be assigned only to you, an AI agent, or nobody."
+        ),
       assigned_to: z
         .string()
         .optional()
@@ -163,6 +198,7 @@ export const taskTools: ToolMap = {
         )
         .optional()
         .describe("Entities to link this task to at creation time."),
+      resolution: personalAssigneeResolution,
     }),
     handler: async (ctx: ToolContext, params: {
       title: string;
@@ -177,11 +213,26 @@ export const taskTools: ToolMap = {
       tags?: string[];
       blocked_by_task_id?: string;
       links?: { entity_type: EntityType; entity_id: string }[];
+      resolution?: "make_org" | "cancel";
     }) => {
+      if (params.resolution === "cancel") {
+        return { success: false, message: "Cancelled. The task was not created." };
+      }
+
+      const effectiveScope = params.resolution === "make_org" ? "org" : (params.scope ?? "org");
+      if (effectiveScope === "personal" && isOtherHuman(params.assigned_to, ctx.userId)) {
+        return personalAssigneeConflict(params.assigned_to!, { assigned_to: params.assigned_to });
+      }
+
       // Day-of-week checksum: return structured conflict for interactive resolution
       if (params.due_date && params.due_date_day) {
         const dateConflict = checkDateDay(params.due_date, params.due_date_day);
         if (dateConflict) return dateConflict;
+      }
+
+      if (params.blocked_by_task_id) {
+        const { error: blockerErr } = await findVisibleTask(ctx, params.blocked_by_task_id);
+        if (blockerErr) throw new Error(`Task not found: ${blockerErr.message}`);
       }
 
       // If blocked_by_task_id is set and no explicit status, ask the user
@@ -220,7 +271,7 @@ export const taskTools: ToolMap = {
           description: params.description ?? null,
           status: effectiveStatus,
           priority: params.priority ?? "medium",
-          scope: params.scope ?? "org",
+          scope: effectiveScope,
           created_by: ctx.userId,
           assigned_to: params.assigned_to ?? null,
           blocked_reason: params.blocked_reason ?? null,
@@ -269,6 +320,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_task: {
     title: "Get Task",
+    annotations: READ_ONLY,
     description:
       "Fetch a single task by ID, including all linked entities and notes.",
     parameters: z.object({
@@ -276,8 +328,7 @@ export const taskTools: ToolMap = {
     }),
     handler: async (ctx: ToolContext, { task_id }: { task_id: string }) => {
       // Verify task ownership first, then fetch links/notes (defense-in-depth)
-      const taskRes = await ctx.db
-        .from("tasks").select("*").eq("id", task_id).eq("company_id", ctx.companyId).is("deleted_at", null).single();
+      const taskRes = await findVisibleTask(ctx, task_id, "*");
       if (taskRes.error)
         throw new Error(`Task not found: ${taskRes.error.message}`);
 
@@ -300,20 +351,13 @@ export const taskTools: ToolMap = {
       // If blocked by another task, fetch the blocker's title and status
       let blocked_by: { id: string; title: string; status: string } | null = null;
       if (task.blocked_by_task_id) {
-        const { data: blocker } = await ctx.db
-          .from("tasks")
-          .select("id, title, status")
-          .eq("id", task.blocked_by_task_id)
-          .eq("company_id", ctx.companyId)
-          .is("deleted_at", null)
-          .single();
+        const { data: blocker } = await findVisibleTask(ctx, task.blocked_by_task_id, "id, title, status");
         if (blocker) blocked_by = blocker;
       }
 
       // Check if any tasks are blocked by this one
-      const { data: dependents } = await liveTasks(ctx.db, "id, title, status")
+      const { data: dependents } = await visibleTasks(ctx, "id, title, status")
         .eq("blocked_by_task_id", task_id)
-        .eq("company_id", ctx.companyId)
         .neq("status", "done");
 
       return {
@@ -331,6 +375,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   update_task: {
     title: "Update Task",
+    annotations: EDIT,
     description:
       "Update any fields on a task. Only provided fields are changed. " +
       "Setting status to 'done' automatically sets completed_at. " +
@@ -372,6 +417,7 @@ export const taskTools: ToolMap = {
         .describe(
           "UUID of a blocking task. Pass empty string to clear the dependency."
         ),
+      resolution: personalAssigneeResolution,
     }),
     handler: async (ctx: ToolContext, params: {
       task_id: string;
@@ -386,8 +432,35 @@ export const taskTools: ToolMap = {
       due_date_day?: Weekday;
       tags?: string[];
       blocked_by_task_id?: string;
+      resolution?: "make_org" | "cancel";
     }) => {
-      const { task_id, ...fields } = params;
+      const { task_id, resolution, ...fields } = params;
+
+      if (resolution === "cancel") {
+        return { success: false, message: "Cancelled. The task was not updated." };
+      }
+
+      const { data: current, error: findErr } = await findVisibleTask(ctx, task_id, "id, scope, assigned_to, created_by");
+      if (findErr) throw new Error(`Task not found: ${findErr.message}`);
+
+      // Only the task's creator can make it a personal task.
+      if (fields.scope === "personal" && resolution !== "make_org" && current.created_by !== ctx.userId) {
+        throw new Error("Only the task's creator can make it a personal task.");
+      }
+
+      // A personal task can be assigned only to its creator, an AI agent, or nobody.
+      const nextScope = resolution === "make_org" ? "org" : (fields.scope ?? current.scope);
+      const nextAssignee =
+        fields.assigned_to === undefined ? current.assigned_to : (fields.assigned_to || null);
+      const changesAssignment = fields.assigned_to !== undefined || fields.scope === "personal";
+      if (changesAssignment && nextScope === "personal" && isOtherHuman(nextAssignee, ctx.userId)) {
+        return personalAssigneeConflict(nextAssignee, { task_id });
+      }
+
+      if (fields.blocked_by_task_id) {
+        const { error: blockerErr } = await findVisibleTask(ctx, fields.blocked_by_task_id);
+        if (blockerErr) throw new Error(`Task not found: ${blockerErr.message}`);
+      }
 
       // Day-of-week checksum: return structured conflict for interactive resolution
       if (fields.due_date && fields.due_date_day) {
@@ -414,6 +487,7 @@ export const taskTools: ToolMap = {
       }
       if (fields.priority !== undefined) updates.priority = fields.priority;
       if (fields.scope !== undefined) updates.scope = fields.scope;
+      if (resolution === "make_org") updates.scope = "org";
       if (fields.assigned_to !== undefined)
         updates.assigned_to = fields.assigned_to === "" ? null : fields.assigned_to;
       if (fields.blocked_reason !== undefined)
@@ -455,9 +529,10 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   complete_task: {
     title: "Complete Task",
+    annotations: EDIT,
     description:
       "Mark a task as done. Optionally log a completion note. " +
-      "Set store_as_memory=true to persist the completion as an org-scoped memory. " +
+      "Set store_as_memory=true to persist the completion as a memory (org-scoped for an org task, personal for a personal task). " +
       "Returns unblocked_tasks if completing this task unblocks dependent tasks. " +
       "If the task is blocked by an incomplete task, a `conflict` response is returned. " +
       "Pass force=true to complete anyway after conflict resolution.",
@@ -466,7 +541,10 @@ export const taskTools: ToolMap = {
       completion_note: z.string().optional()
         .describe("Summary of what was done. AI agents should always provide this."),
       store_as_memory: z.boolean().optional()
-        .describe("If true and completion_note is provided, stores the completion as an org-scoped memory."),
+        .describe(
+          "If true and completion_note is provided, stores the completion as a memory: " +
+            "org-scoped for an org task, personal to the task's creator for a personal task."
+        ),
       memory_project: z.string().optional()
         .describe("Project tag for the memory entry. Only used when store_as_memory is true."),
       resolution: z.enum(["confirm", "cancel"]).optional()
@@ -487,10 +565,9 @@ export const taskTools: ToolMap = {
       const completeAnyway = force === true || resolution === "confirm";
 
       // FIX NEW-05: idempotency - return early if already done.
-      const { data: cur, error: fe } = await ctx.db
-        .from("tasks")
-        .select("id, status, completed_at, blocked_by_task_id")
-        .eq("id", task_id).eq("company_id", ctx.companyId).is("deleted_at", null).single();
+      const { data: cur, error: fe } = await findVisibleTask(
+        ctx, task_id, "id, status, completed_at, blocked_by_task_id"
+      );
       if (fe) throw new Error(`Task not found: ${fe.message}`);
       if (cur?.status === "done") {
         return { success: true, already_done: true, completed_at: cur.completed_at,
@@ -499,13 +576,7 @@ export const taskTools: ToolMap = {
 
       // Blocker check: if this task is blocked by an incomplete task, ask first
       if (!completeAnyway && cur?.blocked_by_task_id) {
-        const { data: blocker } = await ctx.db
-          .from("tasks")
-          .select("id, title, status")
-          .eq("id", cur.blocked_by_task_id)
-          .eq("company_id", ctx.companyId)
-          .is("deleted_at", null)
-          .single();
+        const { data: blocker } = await findVisibleTask(ctx, cur.blocked_by_task_id, "id, title, status");
 
         if (blocker && blocker.status !== "done") {
           return conflict(
@@ -558,10 +629,12 @@ export const taskTools: ToolMap = {
         try {
           const memoryContent = `Task completed: ${task.title}\n\n${completion_note}`;
           const embedding = await embed(ctx, memoryContent);
+          const personal = task.scope === "personal";
           const { error: memError } = await ctx.db.from("memories").insert({
-            user_id: "org",
+            user_id: personal ? task.created_by : "org",
             company_id: ctx.companyId,
-            scope: "org",
+            created_by: ctx.userId,
+            scope: personal ? "personal" : "org",
             project: memory_project ?? null,
             content: memoryContent,
             embedding: JSON.stringify(embedding),
@@ -575,9 +648,8 @@ export const taskTools: ToolMap = {
       }
 
       // Check for tasks that were blocked by this one
-      const { data: unblocked } = await liveTasks(ctx.db, "id, title, status, assigned_to")
+      const { data: unblocked } = await visibleTasks(ctx, "id, title, status, assigned_to")
         .eq("blocked_by_task_id", task_id)
-        .eq("company_id", ctx.companyId)
         .neq("status", "done");
 
       const result: Record<string, unknown> = { success: true, task };
@@ -603,6 +675,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_task: {
     title: "Remove Task",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a task by archiving (hides from active views, recoverable) or permanently deleting. " +
       "On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL options. " +
@@ -614,20 +687,16 @@ export const taskTools: ToolMap = {
     }),
     handler: async (ctx: ToolContext, { task_id, mode, resolution }: { task_id: string; mode?: RemoveMode; resolution?: RemoveResolution }) => {
       // Fetch task
-      const { data: task, error: fetchErr } = await ctx.db
-        .from("tasks")
-        .select("id, title, status, scope, created_by, company_id")
-        .eq("id", task_id)
-        .eq("company_id", ctx.companyId)
-        .is("deleted_at", null)
-        .single();
+      const { data: task, error: fetchErr } = await findVisibleTask(
+        ctx, task_id, "id, title, status, scope, created_by, company_id"
+      );
 
       if (fetchErr) throw new Error(`Task not found: ${fetchErr.message}`);
 
       // Gather linked data counts
       const [depsRes, notesRes, linksRes] = await Promise.all([
-        liveTasks(ctx.db, "id", { count: "exact", head: true })
-          .eq("blocked_by_task_id", task_id).eq("company_id", ctx.companyId).neq("status", "done"),
+        visibleTasks(ctx, "id", { count: "exact", head: true })
+          .eq("blocked_by_task_id", task_id).neq("status", "done"),
         ctx.db.from("task_notes").select("id", { count: "exact", head: true }).eq("task_id", task_id),
         ctx.db.from("task_links").select("id", { count: "exact", head: true }).eq("task_id", task_id).eq("company_id", ctx.companyId),
       ]);
@@ -649,7 +718,7 @@ export const taskTools: ToolMap = {
         resolution,
         linked_data,
         delete_warning: "All notes, entity links, and dependent task references will be permanently removed.",
-        before_state: { title: task.title, status: task.status, scope: task.scope },
+        before_state: { title: task.title, status: task.status, scope: task.scope, created_by: task.created_by },
         archiveFn: async () => {
           const { data, error } = await ctx.db
             .from("tasks")
@@ -681,6 +750,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_tasks: {
     title: "List Tasks",
+    annotations: READ_ONLY,
     description:
       "List tasks with rich filtering. Omitting scope returns both org tasks and the caller's personal tasks. " +
       "Filter by entity_type + entity_id to see tasks linked to a specific customer, transaction, etc. " +
@@ -783,9 +853,8 @@ export const taskTools: ToolMap = {
           return empty;
         }
 
-        let q = liveTasks(ctx.db)
+        let q = visibleTasks(ctx)
           .in("id", taskIds)
-          .eq("company_id", ctx.companyId)
           .order("due_date", { ascending: true, nullsFirst: false })
           .limit(params.limit ?? 50);
 
@@ -798,20 +867,11 @@ export const taskTools: ToolMap = {
       }
 
       // Standard query
-      let query = liveTasks(ctx.db)
-        .eq("company_id", ctx.companyId)
+      let query = visibleTasks(ctx)
         .order("due_date", { ascending: true, nullsFirst: false })
         .limit(params.limit ?? 50);
 
-      // Scope filtering
-      if (params.scope === "personal") {
-        query = query.eq("scope", "personal").eq("created_by", ctx.userId);
-      } else if (params.scope === "org") {
-        query = query.eq("scope", "org");
-      } else {
-        // No scope filter: org tasks + caller's personal tasks
-        query = query.or(`scope.eq.org,and(scope.eq.personal,created_by.eq.${ctx.userId})`);
-      }
+      if (params.scope) query = query.eq("scope", params.scope);
 
       if (params.status) {
         query = query.eq("status", params.status);
@@ -909,6 +969,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   link_task: {
     title: "Link Task",
+    annotations: ADDITIVE,
     description:
       "Link a task to any FounderOS entity: customer, contact, transaction, contract, memory, or interaction. " +
       "A task can have multiple links. Duplicate links are silently ignored.",
@@ -929,13 +990,7 @@ export const taskTools: ToolMap = {
       entity_id: string;
     }) => {
       // Verify task belongs to this company before linking
-      const { data: task, error: taskErr } = await ctx.db
-        .from("tasks")
-        .select("id")
-        .eq("id", task_id)
-        .eq("company_id", ctx.companyId)
-        .is("deleted_at", null)
-        .single();
+      const { data: task, error: taskErr } = await findVisibleTask(ctx, task_id);
       if (taskErr || !task) throw new Error("Task not found or access denied.");
       const { error } = await ctx.db
         .from("task_links")
@@ -953,6 +1008,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   unlink_task: {
     title: "Unlink Task",
+    annotations: DESTRUCTIVE,
     description: "Remove a specific entity link from a task.",
     parameters: z.object({
       task_id: z.string().uuid().describe("Task UUID."),
@@ -969,13 +1025,7 @@ export const taskTools: ToolMap = {
       entity_id: string;
     }) => {
       // Verify task belongs to this company before unlinking
-      const { data: task, error: taskErr } = await ctx.db
-        .from("tasks")
-        .select("id")
-        .eq("id", task_id)
-        .eq("company_id", ctx.companyId)
-        .is("deleted_at", null)
-        .single();
+      const { data: task, error: taskErr } = await findVisibleTask(ctx, task_id);
       if (taskErr || !task) throw new Error("Task not found or access denied.");
       // Defense in depth: scope the delete by company_id too so a leaked
       // link UUID from another company cannot be used to unlink it.
@@ -996,6 +1046,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_entity_tasks: {
     title: "List Entity Tasks",
+    annotations: READ_ONLY,
     description: "Get all tasks linked to a specific entity (customer, contact, transaction, etc.).",
     parameters: z.object({
       entity_type: entityTypeEnum.describe("Entity type: customer | contact | interaction | transaction | contract | memory"),
@@ -1019,9 +1070,8 @@ export const taskTools: ToolMap = {
       if (taskIds.length === 0) return { tasks: [], count: 0 };
 
       // FIX NEW-03: add company_id guard (service role bypasses RLS).
-      let query = liveTasks(ctx.db)
+      let query = visibleTasks(ctx)
         .in("id", taskIds)
-        .eq("company_id", ctx.companyId)
         .order("due_date", { ascending: true, nullsFirst: false })
         .limit(limit);
 
@@ -1042,6 +1092,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   add_task_note: {
     title: "Add Task Note",
+    annotations: ADDITIVE,
     description:
       "Add a progress note to a task without changing its status. " +
       "Useful for logging updates, blockers, or partial progress mid-task.",
@@ -1051,13 +1102,7 @@ export const taskTools: ToolMap = {
     }),
     handler: async (ctx: ToolContext, { task_id, note }: { task_id: string; note: string }) => {
       // Verify task belongs to this company before inserting a note
-      const { data: task, error: taskErr } = await ctx.db
-        .from("tasks")
-        .select("id")
-        .eq("id", task_id)
-        .eq("company_id", ctx.companyId)
-        .is("deleted_at", null)
-        .single();
+      const { data: task, error: taskErr } = await findVisibleTask(ctx, task_id);
       if (taskErr || !task) throw new Error("Task not found or access denied.");
       const { data, error } = await ctx.db
         .from("task_notes")
@@ -1074,12 +1119,15 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   assign_task: {
     title: "Assign Task",
+    annotations: EDIT,
     description:
       "Assign or reassign a task to a team member or AI agent. " +
       "Use a FOUNDERS_OS_USER_ID for humans, '@claude' or '@gpt' for AI agents, " +
       "or pass an empty string to unassign. " +
       "A task has exactly one assignee by design - the single accountable owner ('one neck to grab') - so assigning replaces the current owner rather than adding a second. " +
-      "For others who are involved, name them in the task description or use @person tags.",
+      "For others who are involved, name them in the task description or use @person tags. " +
+      "A personal task can be assigned only to you, an AI agent, or nobody. " +
+      "If the response contains a `conflict` field, the task was NOT assigned; present the options and retry with the chosen resolution.",
     parameters: z.object({
       task_id: z.string().uuid().describe("Task UUID."),
       assigned_to: z
@@ -1087,17 +1135,35 @@ export const taskTools: ToolMap = {
         .describe(
           "User ID, '@claude', '@gpt', or empty string to unassign. Replaces the single accountable owner; one assignee per task by design."
         ),
+      resolution: personalAssigneeResolution,
     }),
     handler: async (ctx: ToolContext, {
       task_id,
       assigned_to,
+      resolution,
     }: {
       task_id: string;
       assigned_to: string;
+      resolution?: "make_org" | "cancel";
     }) => {
+      if (resolution === "cancel") {
+        return { success: false, message: "Cancelled. The task was not assigned." };
+      }
+
+      const { data: current, error: findErr } = await findVisibleTask(ctx, task_id, "id, scope");
+      if (findErr) throw new Error(`Task not found: ${findErr.message}`);
+
+      const assignee = assigned_to === "" ? null : assigned_to;
+      if (current.scope === "personal" && resolution !== "make_org" && isOtherHuman(assignee, ctx.userId)) {
+        return personalAssigneeConflict(assigned_to, { task_id });
+      }
+
+      const updates: Record<string, unknown> = { assigned_to: assignee };
+      if (resolution === "make_org") updates.scope = "org";
+
       const { data, error } = await ctx.db
         .from("tasks")
-        .update({ assigned_to: assigned_to === "" ? null : assigned_to })
+        .update(updates)
         .eq("id", task_id)
         .eq("company_id", ctx.companyId)
         .select()
@@ -1112,6 +1178,7 @@ export const taskTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_task_summary: {
     title: "Get Task Summary",
+    annotations: READ_ONLY,
     description:
       "Dashboard-style summary of the task queue: overdue, due today, upcoming, counts by status, " +
       "by assignee, and a dedicated AI tasks section for tasks assigned to @-prefixed agents. " +
@@ -1149,18 +1216,10 @@ export const taskTools: ToolMap = {
       const today = getLocalDateStr(timezone);
       const windowEnd = getLocalDateStr(timezone, days);
 
-      // scopeOrFilter: the .or() string used when no explicit scope is set.
-      // Combines org tasks with the caller's personal tasks.
-      const scopeOrFilter = `scope.eq.org,and(scope.eq.personal,created_by.eq.${ctx.userId})`;
-
       // Each query is built fully inline to keep Supabase types tractable.
       const buildOverdue = () => {
-        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
-        const scoped = scope === "personal"
-          ? q.eq("scope", "personal").eq("created_by", ctx.userId)
-          : scope === "org"
-          ? q.eq("scope", "org")
-          : q.or(scopeOrFilter);
+        const q = visibleTasks(ctx);
+        const scoped = scope ? q.eq("scope", scope) : q;
         return scoped
           .lt("due_date", today)
           .not("due_date", "is", null)
@@ -1170,22 +1229,14 @@ export const taskTools: ToolMap = {
       };
 
       const buildDueToday = () => {
-        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
-        const scoped = scope === "personal"
-          ? q.eq("scope", "personal").eq("created_by", ctx.userId)
-          : scope === "org"
-          ? q.eq("scope", "org")
-          : q.or(scopeOrFilter);
+        const q = visibleTasks(ctx);
+        const scoped = scope ? q.eq("scope", scope) : q;
         return scoped.eq("due_date", today).neq("status", "done");
       };
 
       const buildUpcoming = () => {
-        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
-        const scoped = scope === "personal"
-          ? q.eq("scope", "personal").eq("created_by", ctx.userId)
-          : scope === "org"
-          ? q.eq("scope", "org")
-          : q.or(scopeOrFilter);
+        const q = visibleTasks(ctx);
+        const scoped = scope ? q.eq("scope", scope) : q;
         return scoped
           .gt("due_date", today)
           .lte("due_date", windowEnd)
@@ -1195,23 +1246,14 @@ export const taskTools: ToolMap = {
       };
 
       const buildOpen = () => {
-        const q = liveTasks(ctx.db, "status, assigned_to, priority, blocked_by_task_id")
-          .eq("company_id", ctx.companyId);
-        const scoped = scope === "personal"
-          ? q.eq("scope", "personal").eq("created_by", ctx.userId)
-          : scope === "org"
-          ? q.eq("scope", "org")
-          : q.or(scopeOrFilter);
+        const q = visibleTasks(ctx, "status, assigned_to, priority, blocked_by_task_id");
+        const scoped = scope ? q.eq("scope", scope) : q;
         return scoped.neq("status", "done");
       };
 
       const buildAiTasks = () => {
-        const q = liveTasks(ctx.db).eq("company_id", ctx.companyId);
-        const scoped = scope === "personal"
-          ? q.eq("scope", "personal").eq("created_by", ctx.userId)
-          : scope === "org"
-          ? q.eq("scope", "org")
-          : q.or(scopeOrFilter);
+        const q = visibleTasks(ctx);
+        const scoped = scope ? q.eq("scope", scope) : q;
         return scoped
           .like("assigned_to", "@%")
           .neq("status", "done")

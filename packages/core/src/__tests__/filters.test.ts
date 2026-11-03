@@ -9,7 +9,13 @@
 // ============================================================
 
 import { describe, it, expect } from "vitest";
-import { resolveTagList, liveTasks } from "../tools/filters.js";
+import {
+  resolveTagList,
+  liveTasks,
+  visibleTasks,
+  findVisibleTask,
+  taskVisibilityFilter,
+} from "../tools/filters.js";
 
 describe("resolveTagList", () => {
   it("returns null when no tag filter is provided", () => {
@@ -53,6 +59,14 @@ function fakeDb(calls: Call[]) {
     eq: (column: unknown, value: unknown) => {
       calls.push(["eq", { column, value }]);
       return builder;
+    },
+    or: (filter: unknown) => {
+      calls.push(["or", filter]);
+      return builder;
+    },
+    single: () => {
+      calls.push(["single", null]);
+      return Promise.resolve({ data: null, error: null });
     },
   };
   return {
@@ -114,5 +128,69 @@ describe("liveTasks", () => {
       "eq",
       { column: "company_id", value: "ourthinktank" },
     ]);
+  });
+});
+
+const ctx = (calls: Call[]) =>
+  ({ db: fakeDb(calls), companyId: "ourthinktank", userId: "doug" }) as never;
+
+describe("taskVisibilityFilter", () => {
+  it("allows org tasks and the user's own personal tasks", () => {
+    expect(taskVisibilityFilter("doug")).toBe(
+      "scope.eq.org,and(scope.eq.personal,created_by.eq.doug)"
+    );
+  });
+});
+
+describe("visibleTasks", () => {
+  it("excludes archived and soft-deleted rows", () => {
+    const calls: Call[] = [];
+    visibleTasks(ctx(calls));
+    expect(calls).toContainEqual(["is", { column: "archived_at", value: null }]);
+    expect(calls).toContainEqual(["is", { column: "deleted_at", value: null }]);
+  });
+
+  it("filters by the caller's company", () => {
+    const calls: Call[] = [];
+    visibleTasks(ctx(calls));
+    expect(calls).toContainEqual([
+      "eq",
+      { column: "company_id", value: "ourthinktank" },
+    ]);
+  });
+
+  it("applies the visibility rule for the caller", () => {
+    const calls: Call[] = [];
+    visibleTasks(ctx(calls));
+    expect(calls).toContainEqual(["or", taskVisibilityFilter("doug")]);
+  });
+
+  it("passes through columns and count options", () => {
+    const calls: Call[] = [];
+    visibleTasks(ctx(calls), "id", { count: "exact", head: true });
+    expect(calls[1]).toEqual([
+      "select",
+      { columns: "id", options: { count: "exact", head: true } },
+    ]);
+  });
+});
+
+describe("findVisibleTask", () => {
+  it("reads one task by id in the caller's company with the visibility rule", async () => {
+    const calls: Call[] = [];
+    await findVisibleTask(ctx(calls), "task-1", "id, title");
+    expect(calls[0]).toEqual(["from", "tasks"]);
+    expect(calls).toContainEqual(["select", { columns: "id, title", options: undefined }]);
+    expect(calls).toContainEqual(["eq", { column: "id", value: "task-1" }]);
+    expect(calls).toContainEqual(["eq", { column: "company_id", value: "ourthinktank" }]);
+    expect(calls).toContainEqual(["is", { column: "deleted_at", value: null }]);
+    expect(calls).toContainEqual(["or", taskVisibilityFilter("doug")]);
+    expect(calls[calls.length - 1]).toEqual(["single", null]);
+  });
+
+  it("keeps archived tasks addressable", async () => {
+    const calls: Call[] = [];
+    await findVisibleTask(ctx(calls), "task-1");
+    expect(calls).not.toContainEqual(["is", { column: "archived_at", value: null }]);
   });
 });

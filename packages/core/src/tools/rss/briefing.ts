@@ -12,6 +12,7 @@ import { getCachedItems, type CachedItem } from "./cache.js";
 import { chunkArray } from "./fetcher.js";
 import { GetFeedBriefingInput } from "./types.js";
 import type { Render } from "../../types/render.js";
+import { READ_ONLY_NETWORK } from "../annotations.js";
 
 export const briefingTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ export const briefingTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   get_feed_briefing: {
     title: "Get Feed Briefing",
+    annotations: READ_ONLY_NETWORK,
     description:
       "Generate a compact headline briefing from pinned feeds for the morning dashboard. " +
       "Returns one headline per tag, capped at 8 total. Designed to be included in " +

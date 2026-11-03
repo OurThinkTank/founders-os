@@ -28,6 +28,7 @@ import { tagFilterParams, resolveTagList } from "../filters.js";
 import type { Render } from "../../types/render.js";
 import type { ToolContext } from "../../types/context.js";
 import { validateTags } from "../tags/index.js";
+import { ADDITIVE, DESTRUCTIVE, EDIT, READ_ONLY } from "../annotations.js";
 
 // Note on helpers used inside contextual handlers:
 //   - getFinancialAccess(ctx) — access.ts refactor 2026-05-28.
@@ -99,6 +100,7 @@ export function rollupByCustomer(
 export const financialTools: ToolMap = {
   add_transaction: {
     title: "Add Transaction",
+    annotations: ADDITIVE,
     description:
       "Record an income or expense transaction. Automatically updates the account balance. " +
       "Provide a positive amount — the sign is applied based on the category type.",
@@ -218,6 +220,7 @@ export const financialTools: ToolMap = {
 
   list_transactions: {
     title: "List Transactions",
+    annotations: READ_ONLY,
     description:
       "List financial transactions with optional date range and account filters. " +
       "Response includes a render field with tiered rendering guidance - check it before composing your reply.",
@@ -342,6 +345,7 @@ export const financialTools: ToolMap = {
 
   set_transaction_customer: {
     title: "Set Transaction Customer",
+    annotations: EDIT,
     description:
       "Attribute an existing transaction to a customer, or detach it. " +
       "Pass a customer_id to attribute the transaction, or null to clear the attribution.",
@@ -405,6 +409,7 @@ export const financialTools: ToolMap = {
 
   add_category: {
     title: "Add Category",
+    annotations: ADDITIVE,
     description: "Create an income or expense category.",
     parameters: z.object({
       name: z.string().describe("Category name (must be unique within the company)."),
@@ -447,6 +452,7 @@ export const financialTools: ToolMap = {
 
   list_categories: {
     title: "List Categories",
+    annotations: READ_ONLY,
     description: "List all financial categories, optionally filtered by type.",
     parameters: z.object({
       type: z
@@ -494,6 +500,7 @@ export const financialTools: ToolMap = {
 
   add_account: {
     title: "Add Account",
+    annotations: ADDITIVE,
     description: "Create a capital account (e.g. bank account, credit card, wallet).",
     parameters: z.object({
       name: z.string().describe("Account name (must be unique within the company)."),
@@ -546,6 +553,7 @@ export const financialTools: ToolMap = {
 
   list_accounts: {
     title: "List Accounts",
+    annotations: READ_ONLY,
     description: "List all capital accounts with their current balances.",
     parameters: z.object({
       ...tagFilterParams,
@@ -581,6 +589,12 @@ export const financialTools: ToolMap = {
 
   transfer_between_accounts: {
     title: "Transfer Between Accounts",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     description:
       "Record a transfer of funds between two capital accounts. " +
       "Both legs are marked exclude_from_reports=true so they don't skew P&L. " +
@@ -730,6 +744,7 @@ export const financialTools: ToolMap = {
 
   get_pl_report: {
     title: "Get P&L Report",
+    annotations: READ_ONLY,
     description:
       "Return a profit & loss summary grouped by category for a given date range. " +
       "Excludes transactions marked exclude_from_reports. Pass `customer_id` to " +
@@ -906,6 +921,7 @@ export const financialTools: ToolMap = {
 
   remove_transaction: {
     title: "Remove Transaction",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a transaction by archiving (hides from views and reports, recoverable) or permanently " +
       "deleting (reverses the balance effect). On first call, returns a `conflict` with confirm / archive / cancel. " +
@@ -1071,6 +1087,7 @@ export const financialTools: ToolMap = {
 
   get_financial_summary: {
     title: "Get Financial Summary",
+    annotations: READ_ONLY,
     description:
       "Return a snapshot of the company's financial position: total assets across all accounts, " +
       "plus year-to-date income and expenses. " +
@@ -1172,6 +1189,7 @@ export const financialTools: ToolMap = {
 
   remove_account: {
     title: "Remove Account",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a financial account by archiving (hides from active views, recoverable) or " +
       "permanently deleting. On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL. " +
@@ -1260,6 +1278,7 @@ export const financialTools: ToolMap = {
 
   remove_category: {
     title: "Remove Category",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a financial category by archiving (hides from active views, recoverable) or " +
       "permanently deleting. On first call, returns a `conflict` with ARCHIVE / DELETE / CANCEL. " +

@@ -35,6 +35,7 @@ src/tools/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
+import { READ_ONLY } from "../annotations.js";
 import { createServiceClient } from "../../supabase.js";
 
 // Helper for multi-tenant scoping (copy the pattern from financial or memory)
@@ -46,6 +47,7 @@ export const myDomainTools: ToolMap = {
   // Tool name becomes the MCP tool name exactly as written here
   do_something: {
     title: "Do Something",            // Human-readable name shown in tool UIs
+    annotations: READ_ONLY,           // Required. See "Annotations" below
     description:
       "One or two sentences. What does this tool do and when should the AI call it?",
     parameters: z.object({
@@ -100,11 +102,13 @@ The motivation is described in `docs/multi-deployment-architecture.md`: the same
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerToolMap, type ToolMap } from "../register.js";
+import { READ_ONLY } from "../annotations.js";
 import type { ToolContext } from "../../types/context.js";
 
 export const myDomainTools: ToolMap = {
   do_something: {
     title: "Do Something",
+    annotations: READ_ONLY,
     description: "...",
     parameters: z.object({
       required_field: z.string().describe("Description."),
@@ -353,6 +357,33 @@ This is a smell-test checklist, not a compliance report. Cross-LLM evals and aut
 - Return a plain object or array. Never construct `{ content: [...] }` inside a Pattern A handler.
 - Throw `new Error("Descriptive message: ${detail}")` on failure. The wrapper catches it.
 - Use `Promise.all` for independent async operations.
+
+---
+
+## Annotations
+
+Every tool carries MCP tool annotations. `annotations` is a required field on `ToolDefinition`, so a ToolMap tool without it fails the TypeScript build. `registerToolMap` passes it to `server.registerTool`. Directly registered tools (`ping`, `get_version`, `get_usage_guide`, `show_capabilities`, `list_demos`) set it by hand in their `registerTool` config.
+
+**Always set all four hints as booleans:** `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. Never rely on the spec defaults. A tool that is not read-only and has no `destructiveHint` counts as destructive, so an additive write must say `destructiveHint: false`.
+
+Use one of the shared sets in `core/src/tools/annotations.ts`:
+
+| Set | Use for | readOnly | destructive | idempotent | openWorld |
+|---|---|---|---|---|---|
+| `READ_ONLY` | `get_*`, `list_*`, `search_*`, `memory_recall`, `preview_tags`, diagnostic and meta tools | true | false | true | false |
+| `READ_ONLY_NETWORK` | Reads that fetch feed URLs: `get_feed_items`, `get_feed_briefing`, `read_feed_item` | true | false | true | true |
+| `DESTRUCTIVE` | `remove_*`, `purge_*`, `memory_forget`, `unsubscribe_feed`, `unlink_task`, `set_financial_access`, `set_member_owner` | false | true | true | false |
+| `EDIT` | `update_*`, `rename_tag`, `memory_update`, `restore_*`, `complete_task`, `assign_task`, `set_transaction_customer`, `pin_feed`, `unpin_feed` | false | false | true | false |
+| `ADDITIVE` | `add_*`, `create_*`, `log_interaction`, `memory_store`, `memory_summarize_and_store`, `bookmark_item`, `checkpoint`, `link_task`, `run_playbook` | false | false | false | false |
+| `NETWORK_WRITE` | `subscribe_feed`, `refresh_feeds`, `import_starter_feeds` | false | false | true | true |
+
+`transfer_between_accounts` is destructive and not idempotent, so it sets its four hints inline.
+
+**Soft deletes count as destructive.** A `remove_*` tool is `DESTRUCTIVE` even though `restore_item` can undo it.
+
+**Idempotent** means calling twice with the same arguments has no additional effect. **Open world** means the tool reaches outside the company database, for example fetching a feed URL.
+
+`core/src/__tests__/tool-annotations.test.ts` registers every domain and checks that each tool sets all four hints, that `remove_*`, `purge_*` and `memory_forget` are destructive, that `get_*`, `list_*` and `search_*` are read-only, and that no tool is both read-only and destructive. `mcp-server/src/__tests__/tool-annotations.test.ts` checks the directly registered tools.
 
 ---
 

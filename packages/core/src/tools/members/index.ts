@@ -20,6 +20,7 @@ import {
 } from "../financial/access.js";
 import { writeAuditLog } from "../audit.js";
 import type { ToolContext } from "../../types/context.js";
+import { ADDITIVE, DESTRUCTIVE, READ_ONLY } from "../annotations.js";
 
 // access.ts helpers (isOwner / isLastOwner / getFinancialAccess) and
 // writeAuditLog are fully contextual (refactors 2026-05-28) and threaded
@@ -33,6 +34,7 @@ export const memberTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   list_members: {
     title: "List Members",
+    annotations: READ_ONLY,
     description:
       "List all team members in this company with their owner status and financial access level. " +
       "Any member can call this — you don't need to be an owner to see the roster.",
@@ -81,6 +83,7 @@ export const memberTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   add_member: {
     title: "Add Member",
+    annotations: ADDITIVE,
     description:
       "Add a team member to the company. Creates their company_members row with default access " +
       "(no financial access, not an owner). Use set_financial_access to grant financial access, " +
@@ -165,6 +168,7 @@ export const memberTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   set_member_owner: {
     title: "Set Member Owner",
+    annotations: DESTRUCTIVE,
     description:
       "Promote or demote a team member's owner status. Owners can manage financial access, " +
       "add/remove members, and read the audit log. " +
@@ -259,6 +263,7 @@ export const memberTools: ToolMap = {
   // ──────────────────────────────────────────────────────────
   remove_member: {
     title: "Remove Member",
+    annotations: DESTRUCTIVE,
     description:
       "Remove a team member from the company. Deletes their company_members row, " +
       "revoking all financial access. Their historical data (tasks, interactions, transactions) " +

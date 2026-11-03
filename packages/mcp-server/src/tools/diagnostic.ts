@@ -198,6 +198,12 @@ export function registerDiagnosticTools(
     "ping",
     {
       title: "Ping",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description: `Test tool — returns pong.${versionNotice}`,
       inputSchema: {
         message: z.string().optional().describe("Optional message to echo back"),
@@ -219,6 +225,12 @@ export function registerDiagnosticTools(
     "get_version",
     {
       title: "Get Version",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description:
         "Returns the running version of @ourthinktank/founders-os, the rendering contract version (used to detect plugin/server drift), how the connector was launched (launchMethod: npx | global | local | unknown) with a tailored howToUpdate string, the release channel (channel: stable | prerelease), the published head of that channel, and the database schema status (dbSchemaStatus: current | behind | ahead | untracked | unknown) with a howToUpdateDb step when action is needed. Version comparison is semver-aware and channel-aware: stable builds compare against the `latest` tag, prerelease builds against the `next` tag, so a prerelease that is ahead of stable is NOT reported as an update. versionStatus is one of current | update-available | ahead | unknown; updateAvailable is true only when a genuinely newer version exists on your channel (with updateTo naming it). Call at session start; if updateAvailable is true relay current vs updateTo and the howToUpdate step, and if dbSchemaStatus is behind or untracked relay the howToUpdateDb step.",
       inputSchema: {
