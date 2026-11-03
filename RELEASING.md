@@ -11,7 +11,7 @@ Ground rules that apply to every path below:
 - Core must be published before mcp-server, because mcp-server depends on it.
 - In the repo, mcp-server declares the core dependency as `"*"`; at publish time it is pinned to the exact version so consumers resolve a concrete release.
 - The version fields in the `package.json` files are not the source of truth. The release tag (or the workflow input) is, and CI overwrites the version fields at publish time. They may lag in the repo, which is fine.
-- Publishing uses npm provenance, which works because the repo is public.
+- Publishing uses npm trusted publishing (OIDC). There is no npm token: each workflow exchanges its GitHub OIDC token for a short-lived publish token, and npm attaches provenance automatically. This needs `id-token: write` on the job, npm 11.5.1 or later (the workflows upgrade npm before publishing), and a trusted publisher configured on npmjs.com for both packages.
 - `main` is the public release line; `develop` is the integration line. Releases come from `main`, prereleases from `develop`.
 
 ## 1. Standard release (publishes to `latest`)
@@ -23,7 +23,9 @@ Driven by `.github/workflows/publish.yml`, which fires when a GitHub release is 
 3. On `main`, create a GitHub release with a tag of the form `vX.Y.Z` (the leading `v` is stripped by CI).
 4. CI then, in order: syncs all package versions from the tag, runs `npm ci`, builds, publishes core with `--provenance`, pins mcp-server's core dependency to the exact version, publishes mcp-server with `--provenance`, and builds the standalone setup page and attaches it to the release as an asset.
 
-You do not bump versions by hand for a release; the tag is authoritative. Requires the `NPM_TOKEN` repository secret.
+You do not bump versions by hand for a release; the tag is authoritative.
+
+The tag must point at a commit whose `publish.yml` is the one you want to run: a release event runs the workflow file from the tagged commit, so re-running a failed job after fixing the workflow on `main` still runs the old file. If a publish fails before anything reaches npm, fix the workflow, then delete the release and tag and create them again on the new commit.
 
 ## 2. Local test build (no registry) - `npm pack`
 
@@ -77,6 +79,17 @@ Two footguns this flow is built to avoid:
 
 When a prerelease is good, ship the final version through the standard release flow in section 1; the `next` tag can be left to expire or be re-pointed by the next prerelease. Do not promote a prerelease build to `latest` by hand.
 
+## Trusted publisher setup
+
+Configured once per package on npmjs.com (package settings, Trusted Publisher, GitHub Actions), for both `@ourthinktank/founders-os-core` and `@ourthinktank/founders-os`:
+
+- Organization: `OurThinkTank`
+- Repository: `founders-os`
+- Workflow filename: `publish.yml` (and `prerelease.yml` if the prerelease channel is used)
+- Environment: none
+
+Changing this configuration requires interactive 2FA. If a publish fails with a 404 or "access token expired or revoked" on `PUT`, check that the workflow filename here matches the file that ran, that the npm upgrade step printed 11.5.1 or later, and that no `NODE_AUTH_TOKEN` is set in the publish step's environment.
+
 ## Manual fallback
 
-If CI is unavailable, the prerelease can be run by hand from a clean `develop` checkout, mirroring the workflow steps: set the version on root + both packages, `npm ci`, `npm run build`, `npm test`, `npm publish -w packages/core --tag next --provenance`, pin mcp-server's core dep to the exact version, then `npm publish -w packages/mcp-server --tag next --provenance`. Requires an npm token with publish rights to the `@ourthinktank` scope.
+If CI is unavailable, the prerelease can be run by hand from a clean `develop` checkout, mirroring the workflow steps: set the version on root + both packages, `npm ci`, `npm run build`, `npm test`, `npm publish -w packages/core --tag next --provenance`, pin mcp-server's core dep to the exact version, then `npm publish -w packages/mcp-server --tag next --provenance`. A manual publish runs as a maintainer logged in with `npm login` and 2FA, not with a token, and cannot carry provenance (that only comes from CI).

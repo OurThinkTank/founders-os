@@ -36,6 +36,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Trusted publishing (OIDC): npm exchanges this job's GitHub OIDC token
+      # (id-token: write above) for a short-lived publish token, so there is no
+      # NPM_TOKEN secret. Requires npm >= 11.5.1 and a trusted publisher on
+      # npmjs.com for each package naming this workflow file. Upgrade npm only
+      # after npm ci, and stay on 11: npm 12 turns install scripts off by default.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.10.0 && npm --version
+
       # Two-package publish (Phase 1 core extraction). Order matters: core must
       # be on the registry before mcp-server, because mcp-server depends on it.
       # Versions are kept in lockstep by the sync step above. The local workspace
@@ -46,8 +54,6 @@ jobs:
       # build from this workflow (the job already declares `id-token: write`).
       - name: Publish core
         run: npm publish -w packages/core --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Pin mcp-server core dependency to exact version
         run: |
@@ -56,8 +62,6 @@ jobs:
 
       - name: Publish mcp-server
         run: npm publish -w packages/mcp-server --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Build the standalone setup page (integrations/setup-page) with the release
   # version stamped in the footer and the canonical supabase/setup.sql inlined,

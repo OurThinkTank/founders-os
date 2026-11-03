@@ -77,6 +77,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # Trusted publishing (OIDC): npm exchanges this job's GitHub OIDC token
+      # (id-token: write above) for a short-lived publish token, so there is no
+      # NPM_TOKEN secret. Requires npm >= 11.5.1 and a trusted publisher on
+      # npmjs.com for each package naming this workflow file. Upgrade npm only
+      # after npm ci, and stay on 11: npm 12 turns install scripts off by default.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.10.0 && npm --version
+
       # Order matters: core must be on the registry before mcp-server, because
       # mcp-server depends on it. The local workspace uses "*" for the core
       # dependency; we pin it to the exact prerelease version before publishing
@@ -84,16 +92,12 @@ jobs:
       # publish.yml, but with --tag so `latest` is never touched.
       - name: Publish core
         run: npm publish -w packages/core --tag "${{ inputs.dist_tag }}" --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Pin mcp-server core dependency to exact version
         run: npm -w packages/mcp-server pkg set "dependencies.@ourthinktank/founders-os-core=${{ inputs.version }}"
 
       - name: Publish mcp-server
         run: npm publish -w packages/mcp-server --tag "${{ inputs.dist_tag }}" --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
         run: |
